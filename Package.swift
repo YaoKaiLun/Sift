@@ -18,7 +18,7 @@ let package = Package(
                 dependencies: ["GitKit", "DiffEngine", "RepoStore"],
                 resources: [.process("Resources")]),
         .testTarget(name: "GitKitTests", dependencies: ["GitKit"]),
-        .testTarget(name: "DiffEngineTests", dependencies: ["DiffEngine"]),
+        .testTarget(name: "DiffEngineTests", dependencies: ["DiffEngine", "SiftUI"]),
         .testTarget(name: "RepoStoreTests", dependencies: ["RepoStore"]),
         .testTarget(name: "PerformanceTests", dependencies: ["GitKit", "DiffEngine", "RepoStore"]),
     ]

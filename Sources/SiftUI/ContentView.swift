@@ -14,10 +14,7 @@ public struct ContentView: View {
             FileListPane()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 300, max: 480)
         } detail: {
-            // Task 13 会把这里换成真正的 diff 视图。
-            Text("选择一个文件")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            DiffPane()
         }
         .alert("出错了",
                isPresented: .constant(store.errorMessage != nil),
