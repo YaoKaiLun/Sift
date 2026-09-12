@@ -3985,11 +3985,19 @@ struct DiffPane: View {
                     ProgressView().controlSize(.small)
                 }
             case .ready(let diff):
-                if diff.content == .empty {
+                switch diff.content {
+                case .empty:
                     ContentUnavailableView("此文件没有文本差异", systemImage: "equal.circle")
-                } else if diff.content == .binary {
+                case .binary:
                     ContentUnavailableView("二进制文件", systemImage: "doc.badge.gearshape")
-                } else {
+                case .modeChangeOnly(let oldMode, let newMode):
+                    ContentUnavailableView {
+                        Label("只有文件权限变化", systemImage: "lock.rotation")
+                    } description: {
+                        Text("\(oldMode) → \(newMode)")
+                            .font(Theme.codeFont)
+                    }
+                case .textual:
                     DiffTextView(document: DiffDocumentBuilder.build(diff, layout: .unified))
                 }
             case .collapsed(let reason, let path):
