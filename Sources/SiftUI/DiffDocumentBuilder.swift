@@ -54,7 +54,8 @@ public enum DiffDocumentBuilder {
         return NSAttributedString(string: text, attributes: [
             .font: font,
             .foregroundColor: NSColor.secondaryLabelColor,
-            .backgroundColor: NSColor.quaternarySystemFill,
+            // quaternarySystemFill 在深色下几乎看不见，hunk 分界必须能一眼看出来。
+            .backgroundColor: NSColor.textColor.withAlphaComponent(0.08),
             .paragraphStyle: paragraph,
         ])
     }

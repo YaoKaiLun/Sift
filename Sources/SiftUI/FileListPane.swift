@@ -5,129 +5,208 @@ import RepoStore
 
 struct FileListPane: View {
     @Environment(RepoStore.self) private var store
+    @Environment(\.trafficLightInset) private var trafficLightInset
+    @Binding var showsSidebar: Bool
+    @State private var collapsedDirectories: Set<String> = []
+    @State private var hoveredRow: String?
 
     var body: some View {
         @Bindable var store = store
         VStack(spacing: 0) {
-            List {
-                group(title: "已暂存", statuses: store.fileStatuses.filter(\.hasStagedChanges), staged: true)
-                group(title: "未暂存", statuses: store.fileStatuses.filter(\.hasUnstagedChanges), staged: false)
-                group(title: "未跟踪", statuses: store.fileStatuses.filter(\.isUntracked), staged: false)
+            PaneHeader(title: "改动",
+                       subtitle: store.selectedWorktree?.displayName,
+                       showsDivider: true,
+                       leadingInset: showsSidebar ? 0 : trafficLightInset,
+                       leading: {
+                // 槽宽必须等于行里的状态字母栏，标题才会和文件名同一条竖线。
+                PlainIconButton(systemName: "sidebar.left", help: "显示或隐藏侧边栏") {
+                    showsSidebar.toggle()
+                }
+                .frame(width: Theme.statusColumnWidth)
+            },
+                       trailing: {
+                PlainIconToggle(selection: $store.usesTreeView,
+                                falseIcon: "list.bullet",
+                                trueIcon: "list.bullet.indent",
+                                help: "切换平铺视图与树视图")
+            })
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows) { row in
+                        view(for: row)
+                    }
+                }
+                .padding(.vertical, 4)
             }
-            .listStyle(.inset)
             .overlay {
-                if store.fileStatuses.isEmpty && !store.isLoadingFileList {
-                    ContentUnavailableView("没有改动", systemImage: "checkmark.circle")
+                if store.selectedWorktree == nil {
+                    PaneEmptyState(title: "选择一个工作树", systemImage: "sidebar.left")
+                } else if store.fileStatuses.isEmpty && !store.isLoadingFileList {
+                    PaneEmptyState(title: "没有改动", systemImage: "checkmark.circle")
                 }
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Picker("", selection: $store.usesTreeView) {
-                    Image(systemName: "list.bullet").tag(false)
-                    Image(systemName: "list.bullet.indent").tag(true)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Theme.contentBackground)
+    }
+
+    // MARK: - 行构建
+    //
+    // 树也先压平成一维数组再交给 LazyVStack。这样每一行的高度、
+    // 左右固定栏都由同一段代码决定，不会出现 DisclosureGroup 自带的另一套间距。
+
+    private var rows: [Row] {
+        var result: [Row] = []
+        append(&result, title: "已暂存",
+               statuses: store.fileStatuses.filter(\.hasStagedChanges), staged: true)
+        append(&result, title: "未暂存",
+               statuses: store.fileStatuses.filter(\.hasUnstagedChanges), staged: false)
+        append(&result, title: "未跟踪",
+               statuses: store.fileStatuses.filter(\.isUntracked), staged: false)
+        return result
+    }
+
+    private func append(_ rows: inout [Row], title: String, statuses: [FileStatus], staged: Bool) {
+        guard !statuses.isEmpty else { return }
+        let prefix = staged ? "s" : "u"
+        rows.append(Row(id: "\(prefix):section:\(title)", depth: 0,
+                        kind: .section(title: title, count: statuses.count, isFirst: rows.isEmpty)))
+        if store.usesTreeView {
+            let nodes = FileTreeBuilder.build(from: statuses, collapsingSingleChildDirectories: true)
+            appendTree(nodes, prefix: prefix, staged: staged, depth: 0, into: &rows)
+        } else {
+            for status in statuses {
+                rows.append(Row(id: "\(prefix):file:\(status.path)", depth: 0,
+                                kind: .file(status: status, staged: staged, showsDirectory: true)))
+            }
+        }
+    }
+
+    private func appendTree(_ nodes: [FileTreeNode], prefix: String, staged: Bool,
+                            depth: Int, into rows: inout [Row]) {
+        for node in nodes {
+            switch node {
+            case .file(let status):
+                rows.append(Row(id: "\(prefix):file:\(status.path)", depth: depth,
+                                kind: .file(status: status, staged: staged, showsDirectory: false)))
+            case .directory(let name, let path, let children):
+                let id = "\(prefix):dir:\(path)"
+                let collapsed = collapsedDirectories.contains(id)
+                rows.append(Row(id: id, depth: depth,
+                                kind: .directory(name: name, collapsed: collapsed)))
+                if !collapsed {
+                    appendTree(children, prefix: prefix, staged: staged,
+                               depth: depth + 1, into: &rows)
                 }
-                .pickerStyle(.segmented)
-                .help("切换平铺视图与树视图")
             }
         }
     }
 
     @ViewBuilder
-    private func group(title: String, statuses: [FileStatus], staged: Bool) -> some View {
-        if !statuses.isEmpty {
-            Section(title) {
-                if store.usesTreeView {
-                    let nodes = FileTreeBuilder.build(
-                        from: statuses, collapsingSingleChildDirectories: true)
-                    ForEach(nodes.map { (id: treeIdentity($0, staged: staged), node: $0) },
-                            id: \.id) { item in
-                        FileTreeNodeView(node: item.node, staged: staged)
-                    }
-                } else {
-                    ForEach(statuses.map { (id: fileIdentity($0, staged: staged), status: $0) },
-                            id: \.id) { item in
-                        FileRowView(status: item.status, staged: staged, showsFullPath: true)
-                    }
-                }
+    private func view(for row: Row) -> some View {
+        switch row.kind {
+        case .section(let title, let count, let isFirst):
+            SectionHeaderRow(title: title, count: count, isFirst: isFirst)
+        case .directory(let name, let collapsed):
+            directoryRow(id: row.id, name: name, depth: row.depth, collapsed: collapsed)
+        case .file(let status, let staged, let showsDirectory):
+            fileRow(id: row.id, status: status, staged: staged,
+                    depth: row.depth, showsDirectory: showsDirectory)
+        }
+    }
+
+    private func directoryRow(id: String, name: String, depth: Int, collapsed: Bool) -> some View {
+        HStack(spacing: Theme.rowSpacing) {
+            Color.clear.frame(width: Theme.statusColumnWidth)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(collapsed ? 0 : 90))
+                .frame(width: 10)
+            Text(name)
+                .font(Theme.pathFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, CGFloat(depth) * Theme.indentWidth)
+        .rowSurface(isSelected: false, isHovered: hoveredRow == id)
+        .pointerCursor()
+        .onHover { hoveredRow = $0 ? id : nil }
+        .onTapGesture {
+            if collapsed {
+                collapsedDirectories.remove(id)
+            } else {
+                collapsedDirectories.insert(id)
             }
         }
     }
 
-}
-
-private struct FileTreeNodeView: View {
-    let node: FileTreeNode
-    let staged: Bool
-
-    var body: some View {
-        switch node {
-        case .file(let status):
-            FileRowView(status: status, staged: staged, showsFullPath: false)
-        case .directory(let name, _, let children):
-            DisclosureGroup {
-                ForEach(children.map { (id: treeIdentity($0, staged: staged), node: $0) },
-                        id: \.id) { item in
-                    FileTreeNodeView(node: item.node, staged: staged)
-                }
-            } label: {
-                Label(name, systemImage: "folder")
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-private struct FileRowView: View {
-    @Environment(RepoStore.self) private var store
-    let status: FileStatus
-    let staged: Bool
-    let showsFullPath: Bool
-
-    var body: some View {
-        let isSelected = store.selectedFile?.path == status.path
+    private func fileRow(id: String, status: FileStatus, staged: Bool,
+                         depth: Int, showsDirectory: Bool) -> some View {
+        let selected = store.selectedFile?.path == status.path
             && store.selectedFileIsStaged == staged
-        return HStack(spacing: 6) {
+        let stats = staged ? store.stagedLineStats[status.path] : store.unstagedLineStats[status.path]
+        return HStack(spacing: Theme.rowSpacing) {
             StatusBadge(kind: staged ? status.indexStatus : status.worktreeStatus)
-            Text(showsFullPath ? status.path : status.fileName)
-                .font(Theme.interfaceFont)
+                .frame(width: Theme.statusColumnWidth)
+            Text(showsDirectory ? status.path : status.fileName)
+                .font(Theme.pathFont)
                 .lineLimit(1)
                 .truncationMode(.head)
-            Spacer(minLength: 8)
-            if let stats = (staged ? store.stagedLineStats : store.unstagedLineStats)[status.path] {
-                LineStatsBadge(stats: stats)
-            }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, CGFloat(depth) * Theme.indentWidth)
+            LineStatsBadge(stats: stats)
+                .frame(width: Theme.statsColumnWidth, alignment: .trailing)
         }
-        .padding(.vertical, 1)
-        .contentShape(Rectangle())
-        .background(isSelected ? Color.accentColor.opacity(0.15) : .clear)
+        .rowSurface(isSelected: selected, isHovered: hoveredRow == id)
+        .pointerCursor()
+        .onHover { hoveredRow = $0 ? id : nil }
         .onTapGesture {
             Task { await store.select(file: status, staged: staged) }
         }
     }
+
+}
+
+private struct Row: Identifiable {
+    enum Kind {
+        case section(title: String, count: Int, isFirst: Bool)
+        case directory(name: String, collapsed: Bool)
+        case file(status: FileStatus, staged: Bool, showsDirectory: Bool)
+    }
+
+    /// 同一路径可以同时出现在已暂存和未暂存两组，身份必须带上 staged 前缀。
+    let id: String
+    let depth: Int
+    let kind: Kind
 }
 
 private struct LineStatsBadge: View {
-    let stats: LineStats
+    let stats: LineStats?
 
     var body: some View {
-        if stats.isBinary {
-            Text("二进制")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        } else {
-            HStack(spacing: 4) {
-                if stats.added > 0 {
-                    Text("+\(stats.added)")
-                        .foregroundStyle(.green)
-                }
-                if stats.deleted > 0 {
-                    Text("−\(stats.deleted)")
-                        .foregroundStyle(.red)
+        Group {
+            if let stats, stats.isBinary {
+                Text("二进制")
+                    .foregroundStyle(.tertiary)
+            } else if let stats {
+                HStack(spacing: 4) {
+                    if stats.added > 0 {
+                        Text("+\(stats.added)")
+                            .foregroundStyle(.green)
+                    }
+                    if stats.deleted > 0 {
+                        Text("−\(stats.deleted)")
+                            .foregroundStyle(.red)
+                    }
                 }
             }
-            .font(.caption.monospacedDigit())
         }
+        .font(Theme.secondaryFont.monospacedDigit())
+        .lineLimit(1)
     }
 }
 
@@ -138,7 +217,7 @@ private struct StatusBadge: View {
         Text(letter)
             .font(.system(size: 10, weight: .semibold, design: .monospaced))
             .foregroundStyle(color)
-            .frame(width: 14)
+            .frame(maxWidth: .infinity)
     }
 
     private var letter: String {
@@ -163,18 +242,5 @@ private struct StatusBadge: View {
         case .unmerged: .orange
         default: .accentColor
         }
-    }
-}
-
-/// 同一路径可以同时出现在已暂存和未暂存两组，List 身份必须带上 staged。
-private func fileIdentity(_ status: FileStatus, staged: Bool) -> String {
-    "\(staged ? "s" : "u"):\(status.path)"
-}
-
-private func treeIdentity(_ node: FileTreeNode, staged: Bool) -> String {
-    let prefix = staged ? "s" : "u"
-    switch node {
-    case .directory(_, let path, _): return "\(prefix):dir:\(path)"
-    case .file(let status): return "\(prefix):file:\(status.path)"
     }
 }

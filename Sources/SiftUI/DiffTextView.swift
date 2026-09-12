@@ -27,7 +27,8 @@ struct DiffTextView: NSViewRepresentable {
         textView.isRichText = false
         textView.drawsBackground = true
         textView.backgroundColor = .textBackgroundColor
-        textView.textContainerInset = NSSize(width: 4, height: 8)
+        // 左边距和栏头标题对齐（Theme.horizontalPadding）。
+        textView.textContainerInset = NSSize(width: 10, height: 6)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
         // 不换行：宽度设为无限，靠横向滚动。

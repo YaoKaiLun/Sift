@@ -22,13 +22,15 @@ final class PersistedStateTests: XCTestCase {
         let original = PersistedState(
             repositoryBookmarks: [Data([1, 2, 3])],
             selectedWorktreePath: "/repos/main",
-            usesTreeView: true)
+            usesTreeView: true,
+            appearance: .dark)
         try store.save(original)
 
         let loaded = PersistedStateStore(fileURL: url).load()
         XCTAssertEqual(loaded.repositoryBookmarks, [Data([1, 2, 3])])
         XCTAssertEqual(loaded.selectedWorktreePath, "/repos/main")
         XCTAssertTrue(loaded.usesTreeView)
+        XCTAssertEqual(loaded.appearance, .dark)
     }
 
     func testSaveCreatesIntermediateDirectories() throws {
@@ -49,5 +51,18 @@ final class PersistedStateTests: XCTestCase {
 
         let state = PersistedStateStore(fileURL: url).load()
         XCTAssertTrue(state.repositoryBookmarks.isEmpty)
+    }
+
+    /// 旧版 state.json 没有 appearance 字段时，必须落到跟随系统，不能解码失败。
+    func testMissingAppearanceDefaultsToSystem() throws {
+        let url = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"repositoryBookmarks":[],"usesTreeView":true}"#.utf8).write(to: url)
+
+        let state = PersistedStateStore(fileURL: url).load()
+        XCTAssertTrue(state.usesTreeView)
+        XCTAssertEqual(state.appearance, .system)
     }
 }
