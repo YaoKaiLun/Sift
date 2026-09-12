@@ -79,6 +79,12 @@ public actor DiffCache {
         for key in doomed { remove(key) }
     }
 
+    /// 写操作后只清该路径 staged 与 unstaged 两侧，其它文件的缓存留下。
+    public func remove(inWorktree path: URL, filePath: String) {
+        let doomed = entries.keys.filter { $0.worktreePath == path && $0.filePath == filePath }
+        for key in doomed { remove(key) }
+    }
+
     private func touch(_ key: DiffCacheKey) {
         accessOrder.removeAll { $0 == key }
         accessOrder.append(key)

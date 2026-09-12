@@ -111,4 +111,22 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertEqual(store.repositories.first?.worktrees.count, 2)
         XCTAssertTrue(names.contains("feature-x"), "刷新必须重新跑 git worktree list，实际是 \(names)")
     }
+
+    func testStageFileMovesToStagedGroup() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("a\n", to: "a.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("a\nB\n", to: "a.txt", in: url)
+
+        let store = makeStore()
+        await store.addRepository(at: url)
+        let file = try XCTUnwrap(store.fileStatuses.first)
+        await store.stage(file: file)
+
+        let updated = try XCTUnwrap(store.fileStatuses.first)
+        XCTAssertTrue(updated.hasStagedChanges)
+        XCTAssertFalse(updated.hasUnstagedChanges)
+    }
 }

@@ -31,6 +31,10 @@ public actor DiffEngine {
         await cache.removeAll(inWorktree: worktreePath)
     }
 
+    public func invalidate(worktreePath: URL, filePath: String) async {
+        await cache.remove(inWorktree: worktreePath, filePath: filePath)
+    }
+
     private func load(status: FileStatus, staged: Bool,
                       from repository: GitRepository,
                       ignoringCollapse: Bool) async throws -> LoadedDiff {

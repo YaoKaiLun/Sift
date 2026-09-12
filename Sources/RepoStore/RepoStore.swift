@@ -31,6 +31,8 @@ public final class RepoStore {
     /// DiffPane 用它触发后台构建；每次 `loadedDiff` 变化都递增。
     public private(set) var diffEpoch = 0
     public private(set) var isLoadingFileList = false
+    /// 同一时刻只允许一个在途写；为 true 时写方法立即 return。
+    public private(set) var isMutating = false
     public var errorMessage: String?
 
     public var usesTreeView: Bool {
@@ -224,6 +226,57 @@ public final class RepoStore {
         await fileListTask?.value
     }
 
+    // MARK: - 写操作
+
+    public func stageSelectedFile() async {
+        guard let file = selectedFile else { return }
+        await stage(file: file)
+    }
+
+    public func unstageSelectedFile() async {
+        guard let file = selectedFile else { return }
+        await unstage(file: file)
+    }
+
+    public func stage(file: FileStatus) async {
+        await mutate(path: file.path) { try await $0.stage(path: file.path) }
+    }
+
+    public func unstage(file: FileStatus) async {
+        await mutate(path: file.path) { try await $0.unstage(path: file.path) }
+    }
+
+    public func deleteUntracked(file: FileStatus) async {
+        await mutate(path: file.path) { try await $0.deleteUntracked(path: file.path) }
+    }
+
+    public func stage(hunk: Hunk) async {
+        guard let file = selectedFile else { return }
+        let kind = patchKind(for: file)
+        await mutate(path: file.path) {
+            try await $0.stage(hunk: hunk, path: file.path,
+                               originalPath: file.originalPath, kind: kind)
+        }
+    }
+
+    public func unstage(hunk: Hunk) async {
+        guard let file = selectedFile else { return }
+        let kind = patchKind(for: file)
+        await mutate(path: file.path) {
+            try await $0.unstage(hunk: hunk, path: file.path,
+                                 originalPath: file.originalPath, kind: kind)
+        }
+    }
+
+    public func discard(hunk: Hunk) async {
+        guard let file = selectedFile else { return }
+        let kind = patchKind(for: file)
+        await mutate(path: file.path) {
+            try await $0.discard(hunk: hunk, path: file.path,
+                                 originalPath: file.originalPath, kind: kind)
+        }
+    }
+
     public func restore() async {
         let state = stateStore.load()
         var needsBookmarkRewrite = false
@@ -255,6 +308,33 @@ public final class RepoStore {
         loadedDiff = diff
         diffDocument = nil
         diffEpoch += 1
+    }
+
+    /// 写进行中再点按钮直接忽略。成功后只失效该路径两侧缓存，再立刻刷新列表。
+    private func mutate(path: String, _ body: (GitRepository) async throws -> Void) async {
+        guard !isMutating, let worktree = selectedWorktree else { return }
+        isMutating = true
+        defer { isMutating = false }
+        let repository = GitRepository(root: worktree.path)
+        do {
+            try await body(repository)
+            await engine.invalidate(worktreePath: worktree.path, filePath: path)
+            await refreshFileList()
+        } catch {
+            errorMessage = "无法完成操作：\(error)"
+        }
+    }
+
+    private func patchKind(for file: FileStatus) -> PatchFileKind {
+        if file.isUntracked { return .added }
+        if selectedFileIsStaged {
+            if file.indexStatus == .added { return .added }
+            if file.indexStatus == .deleted { return .deleted }
+        } else {
+            if file.worktreeStatus == .added { return .added }
+            if file.worktreeStatus == .deleted { return .deleted }
+        }
+        return .modified
     }
 
     /// 选中的路径+侧还在就返回需要重载的文件；否则清掉选择。
