@@ -23,6 +23,8 @@ struct HunkActions {
 struct DiffTextView: NSViewRepresentable {
     let document: DiffDocument
     var hunkActions: HunkActions?
+    var onSelectionChange: ((NSRange) -> Void)?
+    var onExplain: ((String, String) -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -30,18 +32,28 @@ struct DiffTextView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let container = NSView(frame: .zero)
-        context.coordinator.install(in: container, document: document, hunkActions: hunkActions)
+        context.coordinator.install(in: container,
+                                    document: document,
+                                    hunkActions: hunkActions,
+                                    onSelectionChange: onSelectionChange,
+                                    onExplain: onExplain)
         return container
     }
 
     func updateNSView(_ container: NSView, context: Context) {
-        context.coordinator.install(in: container, document: document, hunkActions: hunkActions)
+        context.coordinator.install(in: container,
+                                    document: document,
+                                    hunkActions: hunkActions,
+                                    onSelectionChange: onSelectionChange,
+                                    onExplain: onExplain)
     }
 
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, NSTextViewDelegate {
         var document = DiffDocument(text: NSAttributedString(), hunkHeaders: [])
         var hunkActions: HunkActions?
+        var onSelectionChange: ((NSRange) -> Void)?
+        var onExplain: ((String, String) -> Void)?
         private weak var container: NSView?
         private weak var scrollView: NSScrollView?
         private weak var textView: NSTextView?
@@ -49,6 +61,8 @@ struct DiffTextView: NSViewRepresentable {
         private weak var rightTextView: NSTextView?
         private var overlay: HunkOverlayView?
         private var buttonStack: NSStackView?
+        private var explainButton: NSButton?
+        private weak var selectionTextView: NSTextView?
         private var hoveredID: String?
         private var lastButtonIdentity: ButtonIdentity?
         private var isSplit = false
@@ -62,10 +76,16 @@ struct DiffTextView: NSViewRepresentable {
             var isEnabled: Bool
         }
 
-        func install(in container: NSView, document: DiffDocument, hunkActions: HunkActions?) {
+        func install(in container: NSView,
+                     document: DiffDocument,
+                     hunkActions: HunkActions?,
+                     onSelectionChange: ((NSRange) -> Void)?,
+                     onExplain: ((String, String) -> Void)?) {
             self.container = container
             self.document = document
             self.hunkActions = hunkActions
+            self.onSelectionChange = onSelectionChange
+            self.onExplain = onExplain
             let wantSplit = document.splitRight != nil
             if container.subviews.isEmpty || wantSplit != isSplit {
                 rebuildHierarchy(split: wantSplit)
@@ -77,6 +97,7 @@ struct DiffTextView: NSViewRepresentable {
                 replaceText(in: rightTextView, with: right)
             }
             relayoutOverlay()
+            updateExplainButton()
         }
 
         private func rebuildHierarchy(split: Bool) {
@@ -84,6 +105,8 @@ struct DiffTextView: NSViewRepresentable {
             container?.subviews.forEach { $0.removeFromSuperview() }
             overlay = nil
             buttonStack = nil
+            explainButton = nil
+            selectionTextView = nil
             hoveredID = nil
             lastButtonIdentity = nil
             scrollView = nil
@@ -151,6 +174,7 @@ struct DiffTextView: NSViewRepresentable {
             textView.textContainerInset = NSSize(width: 10, height: 6)
             textView.isAutomaticQuoteSubstitutionEnabled = false
             textView.isAutomaticSpellingCorrectionEnabled = false
+            textView.delegate = self
             // 不换行：宽度设为无限，靠横向滚动。
             textView.textContainer?.widthTracksTextView = false
             textView.textContainer?.containerSize = NSSize(
@@ -212,6 +236,13 @@ struct DiffTextView: NSViewRepresentable {
             relayoutOverlay()
         }
 
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            selectionTextView = textView
+            onSelectionChange?(textView.selectedRange())
+            updateExplainButton()
+        }
+
         private func syncVerticalScroll(from notification: Notification) {
             guard isSplit,
                   let clip = notification.object as? NSClipView,
@@ -248,6 +279,7 @@ struct DiffTextView: NSViewRepresentable {
 
         @objc func relayoutOverlay() {
             overlay?.frame = scrollView?.bounds ?? .zero
+            updateExplainButton()
             guard let hoveredID, hunkActions != nil else {
                 hideButtonStack()
                 return
@@ -406,6 +438,67 @@ struct DiffTextView: NSViewRepresentable {
             button.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
             button.setButtonType(.momentaryPushIn)
             return button
+        }
+
+        @objc func explainClicked() {
+            guard let textView = selectionTextView, let storage = textView.textStorage else { return }
+            let range = textView.selectedRange()
+            guard range.length > 0 else { return }
+            let selected = DiffDocumentBuilder.copyableString(from: storage, range: range)
+            let surroundingRange = DiffDocumentBuilder.surroundingRange(
+                of: range, in: storage.string)
+            let surrounding = DiffDocumentBuilder.copyableString(from: storage, range: surroundingRange)
+            onExplain?(selected, surrounding)
+        }
+
+        private func updateExplainButton() {
+            guard let overlay,
+                  let textView = selectionTextView ?? self.textView,
+                  textView.selectedRange().length > 0,
+                  let rect = selectionRectInOverlay(range: textView.selectedRange(), textView: textView)
+            else {
+                explainButton?.isHidden = true
+                return
+            }
+            let button = explainButton ?? makeExplainButton()
+            if explainButton == nil {
+                overlay.addSubview(button)
+                explainButton = button
+            }
+            button.isHidden = false
+            button.sizeToFit()
+            let size = button.fittingSize
+            let padding: CGFloat = 4
+            var x = min(rect.maxX + padding, overlay.bounds.width - size.width - 8)
+            x = max(8, x)
+            let y: CGFloat
+            if overlay.isFlipped {
+                y = min(rect.maxY + padding, max(8, overlay.bounds.height - size.height - 8))
+            } else {
+                y = max(8, rect.minY - size.height - padding)
+            }
+            button.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+        }
+
+        private func makeExplainButton() -> NSButton {
+            let button = NSButton(title: "解释这段", target: self, action: #selector(explainClicked))
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+            button.setButtonType(.momentaryPushIn)
+            return button
+        }
+
+        private func selectionRectInOverlay(range: NSRange, textView: NSTextView) -> NSRect? {
+            guard let overlay,
+                  let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return nil }
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: range, actualCharacterRange: nil)
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x += textView.textContainerOrigin.x
+            rect.origin.y += textView.textContainerOrigin.y
+            return overlay.convert(rect, from: textView)
         }
     }
 }

@@ -68,5 +68,9 @@ struct SiftApp: App {
                 }
             }
         }
+        Settings {
+            SettingsView()
+                .environment(store)
+        }
     }
 }

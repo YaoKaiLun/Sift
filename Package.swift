@@ -19,7 +19,7 @@ let package = Package(
         .target(name: "Highlighter"),
         .target(name: "AIClient"),
         .target(name: "SiftUI",
-                dependencies: ["GitKit", "DiffEngine", "RepoStore", "Highlighter"],
+                dependencies: ["GitKit", "DiffEngine", "RepoStore", "Highlighter", "AIClient"],
                 resources: [.process("Resources")]),
         .testTarget(name: "GitKitTests", dependencies: ["GitKit"]),
         .testTarget(name: "DiffEngineTests", dependencies: ["DiffEngine", "SiftUI"]),

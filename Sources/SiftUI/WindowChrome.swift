@@ -3,6 +3,9 @@ import SwiftUI
 
 public enum WindowChrome {
     public static func apply(to window: NSWindow) {
+        // 设置窗保持系统标题栏，不要套主窗口的无标题栏样式。
+        guard window.titleVisibility == .hidden
+                || window.styleMask.contains(.fullSizeContentView) else { return }
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.styleMask.insert(.fullSizeContentView)

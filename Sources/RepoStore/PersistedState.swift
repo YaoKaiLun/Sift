@@ -14,17 +14,24 @@ public struct PersistedState: Codable, Sendable, Equatable {
     public var usesTreeView: Bool
     public var usesSplitDiff: Bool
     public var appearance: AppearancePreference
+    /// OpenAI 兼容接口的根路径。缺省空，不预填任何服务商。
+    public var explainBaseURL: String
+    public var explainModel: String
 
     public init(repositoryBookmarks: [Data] = [],
                 selectedWorktreePath: String? = nil,
                 usesTreeView: Bool = false,
                 usesSplitDiff: Bool = false,
-                appearance: AppearancePreference = .system) {
+                appearance: AppearancePreference = .system,
+                explainBaseURL: String = "",
+                explainModel: String = "") {
         self.repositoryBookmarks = repositoryBookmarks
         self.selectedWorktreePath = selectedWorktreePath
         self.usesTreeView = usesTreeView
         self.usesSplitDiff = usesSplitDiff
         self.appearance = appearance
+        self.explainBaseURL = explainBaseURL
+        self.explainModel = explainModel
     }
 
     public init(from decoder: Decoder) throws {
@@ -34,6 +41,8 @@ public struct PersistedState: Codable, Sendable, Equatable {
         usesTreeView = try container.decodeIfPresent(Bool.self, forKey: .usesTreeView) ?? false
         usesSplitDiff = try container.decodeIfPresent(Bool.self, forKey: .usesSplitDiff) ?? false
         appearance = try container.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
+        explainBaseURL = try container.decodeIfPresent(String.self, forKey: .explainBaseURL) ?? ""
+        explainModel = try container.decodeIfPresent(String.self, forKey: .explainModel) ?? ""
     }
 }
 

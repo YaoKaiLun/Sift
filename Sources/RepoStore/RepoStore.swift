@@ -3,6 +3,7 @@ import Foundation
 import Observation
 import GitKit
 import DiffEngine
+import AIClient
 
 public struct RepositoryEntry: Identifiable, Sendable {
     public let root: URL
@@ -72,6 +73,27 @@ public final class RepoStore {
         didSet { persist() }
     }
 
+    public var explainBaseURL: String {
+        didSet { persist() }
+    }
+
+    public var explainModel: String {
+        didSet { persist() }
+    }
+
+    /// 只走 Keychain，不写 state.json。
+    public var explainAPIKey: String {
+        didSet { saveExplainAPIKey() }
+    }
+
+    public var showsExplainPanel = false
+    public var explainDraft = ""
+    public private(set) var explainHistory: [ExplainTurn] = []
+    public private(set) var explainStreamingText = ""
+    /// 解释失败只出现在面板里，不占用全局 `errorMessage`。
+    public private(set) var explainError: String?
+    public private(set) var explainSelection = NSRange(location: 0, length: 0)
+
     /// 当前选中 worktree 所属的仓库。侧边栏「移除」用这个，避免按路径再扫一遍。
     public var selectedRepository: RepositoryEntry? {
         guard let selected = selectedWorktree else { return nil }
@@ -82,18 +104,28 @@ public final class RepoStore {
 
     private let engine = DiffEngine()
     private let stateStore: PersistedStateStore
+    private let keychain: KeychainStore
     private var watcher: FileSystemWatcher?
 
     /// 在途任务句柄。切换选择时取消旧任务——这是"切换即取消"约束的落点。
     private var fileListTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
+    private var explainTask: Task<Void, Never>?
+    private var lastExplainSelectedText = ""
+    private var lastExplainSurroundingText = ""
+    private var lastExplainFileDiff = ""
 
-    public init(stateStore: PersistedStateStore = PersistedStateStore()) {
+    public init(stateStore: PersistedStateStore = PersistedStateStore(),
+                keychain: KeychainStore = SystemKeychain()) {
         self.stateStore = stateStore
+        self.keychain = keychain
         let loaded = stateStore.load()
         self.usesTreeView = loaded.usesTreeView
         self.usesSplitDiff = loaded.usesSplitDiff
         self.appearance = loaded.appearance
+        self.explainBaseURL = loaded.explainBaseURL
+        self.explainModel = loaded.explainModel
+        self.explainAPIKey = keychain.get("api-key") ?? ""
     }
 
     // MARK: - 仓库管理
@@ -125,6 +157,7 @@ public final class RepoStore {
             selectedFile = nil
             setLoadedDiff(nil)
             watcher = nil
+            resetExplainConversation(keepingPanel: false)
         }
         persist()
     }
@@ -136,6 +169,7 @@ public final class RepoStore {
         // 切换 worktree：取消旧的所有在途工作。
         fileListTask?.cancel()
         diffTask?.cancel()
+        resetExplainConversation(keepingPanel: false)
 
         selectedWorktree = worktree
         selectedFile = nil
@@ -151,6 +185,10 @@ public final class RepoStore {
 
     public func select(file: FileStatus, staged: Bool) async {
         diffTask?.cancel()
+        let fileChanged = selectedFile?.path != file.path || selectedFileIsStaged != staged
+        if fileChanged {
+            resetExplainConversation(keepingPanel: true)
+        }
         selectedFile = file
         selectedFileIsStaged = staged
         setLoadedDiff(nil)
@@ -209,6 +247,59 @@ public final class RepoStore {
     public func updateDiffDocument(_ document: DiffDocument?, epoch: Int) {
         guard epoch == diffEpoch else { return }
         diffDocument = document
+    }
+
+    // MARK: - 解释
+
+    public var isExplainConfigured: Bool {
+        !explainBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !explainModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !explainAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    public func updateExplainSelection(_ range: NSRange) {
+        let previous = explainSelection
+        explainSelection = range
+        guard showsExplainPanel, range.length > 0, !NSEqualRanges(previous, range) else { return }
+        resetExplainConversation(keepingPanel: true)
+    }
+
+    /// 选区上点「解释这段」。未配置则打开设置，不发请求。
+    public func startExplain(selectedText: String, surroundingText: String) {
+        guard isExplainConfigured else {
+            openExplainSettings()
+            return
+        }
+        resetExplainConversation(keepingPanel: true)
+        lastExplainSelectedText = selectedText
+        lastExplainSurroundingText = surroundingText
+        lastExplainFileDiff = textualFileDiff()
+        showsExplainPanel = true
+        startExplainStream()
+    }
+
+    public func submitExplainDraft() {
+        let text = explainDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard isExplainConfigured else {
+            openExplainSettings()
+            return
+        }
+        guard !lastExplainSelectedText.isEmpty else { return }
+        explainDraft = ""
+        explainHistory.append(ExplainTurn(role: .user, text: text))
+        showsExplainPanel = true
+        startExplainStream()
+    }
+
+    public func closeExplainPanel() {
+        showsExplainPanel = false
+        explainTask?.cancel()
+        explainTask = nil
+    }
+
+    public func openExplainSettings() {
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 
     // MARK: - 刷新
@@ -381,6 +472,7 @@ public final class RepoStore {
         }
         selectedFile = nil
         setLoadedDiff(nil)
+        resetExplainConversation(keepingPanel: true)
         return nil
     }
 
@@ -406,8 +498,109 @@ public final class RepoStore {
             selectedWorktreePath: selectedWorktree?.path.path,
             usesTreeView: usesTreeView,
             usesSplitDiff: usesSplitDiff,
-            appearance: appearance)
+            appearance: appearance,
+            explainBaseURL: explainBaseURL,
+            explainModel: explainModel)
         try? stateStore.save(state)
+    }
+
+    private func saveExplainAPIKey() {
+        let trimmed = explainAPIKey
+        if trimmed.isEmpty {
+            try? keychain.delete("api-key")
+        } else {
+            try? keychain.set(trimmed, account: "api-key")
+        }
+    }
+
+    private func textualFileDiff() -> String {
+        guard case .ready(let diff) = loadedDiff else { return "" }
+        return diff.hunks.map(\.patchText).joined()
+    }
+
+    private func resetExplainConversation(keepingPanel: Bool) {
+        explainTask?.cancel()
+        explainTask = nil
+        explainHistory = []
+        explainStreamingText = ""
+        explainDraft = ""
+        explainError = nil
+        lastExplainSelectedText = ""
+        lastExplainSurroundingText = ""
+        lastExplainFileDiff = ""
+        if !keepingPanel {
+            showsExplainPanel = false
+            explainSelection = NSRange(location: 0, length: 0)
+        }
+    }
+
+    private func startExplainStream() {
+        explainTask?.cancel()
+        explainError = nil
+        explainStreamingText = ""
+
+        let request = ExplainRequest(
+            path: selectedFile?.path ?? "",
+            selectedText: lastExplainSelectedText,
+            surroundingText: lastExplainSurroundingText,
+            fileDiff: lastExplainFileDiff,
+            history: explainHistory)
+        let provider = OpenAICompatibleProvider(
+            baseURL: explainBaseURL,
+            apiKey: explainAPIKey,
+            model: explainModel)
+
+        explainTask = Task.detached { [weak self] in
+            var assembled = ""
+            do {
+                for try await chunk in provider.stream(request) {
+                    try Task.checkCancellation()
+                    assembled += chunk
+                    await MainActor.run {
+                        self?.explainStreamingText = assembled
+                    }
+                }
+                await MainActor.run {
+                    guard let self else { return }
+                    if !assembled.isEmpty {
+                        self.explainHistory.append(ExplainTurn(role: .assistant, text: assembled))
+                    }
+                    self.explainStreamingText = ""
+                    self.explainTask = nil
+                }
+            } catch {
+                if Self.isCancellation(error) {
+                    await MainActor.run { self?.explainTask = nil }
+                    return
+                }
+                await MainActor.run {
+                    self?.explainError = Self.explainErrorMessage(error)
+                    self?.explainStreamingText = assembled
+                    self?.explainTask = nil
+                }
+            }
+        }
+    }
+
+    nonisolated private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return false
+    }
+
+    nonisolated private static func explainErrorMessage(_ error: Error) -> String {
+        if let explain = error as? ExplainError {
+            switch explain {
+            case .notConfigured:
+                return "请先在设置中填写 Base URL、API 密钥和模型。"
+            case .httpStatus(let code):
+                return "请求失败（HTTP \(code)）。"
+            }
+        }
+        if let urlError = error as? URLError {
+            return "网络错误：\(urlError.localizedDescription)"
+        }
+        return "请求失败：\(error.localizedDescription)"
     }
 
     /// 刷新时重新跑 `git worktree list`。添加仓库时拍的快照不会跟着磁盘变。
@@ -437,6 +630,7 @@ public final class RepoStore {
         selectedFile = nil
         setLoadedDiff(nil)
         watcher = nil
+        resetExplainConversation(keepingPanel: false)
         persist()
     }
 }

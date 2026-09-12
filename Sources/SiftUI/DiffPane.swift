@@ -7,6 +7,7 @@ import Highlighter
 
 struct DiffPane: View {
     @Environment(RepoStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmsDelete = false
 
     var body: some View {
@@ -55,8 +56,24 @@ struct DiffPane: View {
                                description: "\(oldMode) → \(newMode)")
             case .textual:
                 if let document = store.diffDocument {
-                    DiffTextView(document: viewDocument(from: document),
-                                 hunkActions: hunkActions)
+                    HStack(spacing: 0) {
+                        DiffTextView(document: viewDocument(from: document),
+                                     hunkActions: hunkActions,
+                                     onSelectionChange: { store.updateExplainSelection($0) },
+                                     onExplain: { selected, surrounding in
+                                         store.startExplain(selectedText: selected,
+                                                            surroundingText: surrounding)
+                                     })
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if store.showsExplainPanel {
+                            Divider()
+                            ExplainPanel()
+                                .frame(width: 320)
+                                .transition(reduceMotion ? .identity : .move(edge: .trailing))
+                        }
+                    }
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                               value: store.showsExplainPanel)
                 } else {
                     ProgressView().controlSize(.small)
                 }

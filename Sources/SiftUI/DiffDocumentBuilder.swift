@@ -77,6 +77,41 @@ public enum DiffDocumentBuilder {
         return result
     }
 
+    /// 把选区扩成整行，再各向外扩 `extraLines` 行，供解释请求带上下文。
+    public static func surroundingRange(of selection: NSRange,
+                                        in string: String,
+                                        extraLines: Int = 8) -> NSRange {
+        let ns = string as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        guard full.length > 0 else { return NSRange(location: 0, length: 0) }
+        let clamped = NSIntersectionRange(selection, full)
+        guard clamped.location != NSNotFound else { return NSRange(location: 0, length: 0) }
+
+        var start: Int
+        var end: Int
+        if clamped.length == 0 {
+            let line = ns.lineRange(for: NSRange(location: min(clamped.location, ns.length - 1), length: 0))
+            start = line.location
+            end = NSMaxRange(line)
+        } else {
+            start = ns.lineRange(for: NSRange(location: clamped.location, length: 0)).location
+            let last = max(clamped.location, NSMaxRange(clamped) - 1)
+            end = NSMaxRange(ns.lineRange(for: NSRange(location: last, length: 0)))
+        }
+
+        for _ in 0..<extraLines {
+            guard start > 0 else { break }
+            start = ns.lineRange(for: NSRange(location: start - 1, length: 0)).location
+        }
+        for _ in 0..<extraLines {
+            guard end < ns.length else { break }
+            let next = ns.lineRange(for: NSRange(location: end, length: 0))
+            if next.length == 0 { break }
+            end = NSMaxRange(next)
+        }
+        return NSRange(location: start, length: end - start)
+    }
+
     public static func build(_ diff: FileDiff, layout: DiffLayout = .unified) -> DiffDocument {
         guard case .textual(let hunks) = diff.content, !hunks.isEmpty else {
             return DiffDocument(text: NSAttributedString(), hunkHeaders: [])

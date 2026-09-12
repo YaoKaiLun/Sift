@@ -77,4 +77,17 @@ final class PersistedStateTests: XCTestCase {
         let state = PersistedStateStore(fileURL: url).load()
         XCTAssertFalse(state.usesSplitDiff)
     }
+
+    /// 旧版 state.json 没有解释设置时，Base URL 与模型名必须落到空字符串。
+    func testMissingExplainFieldsDefaultToEmptyString() throws {
+        let url = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"repositoryBookmarks":[],"usesTreeView":true}"#.utf8).write(to: url)
+
+        let state = PersistedStateStore(fileURL: url).load()
+        XCTAssertEqual(state.explainBaseURL, "")
+        XCTAssertEqual(state.explainModel, "")
+    }
 }

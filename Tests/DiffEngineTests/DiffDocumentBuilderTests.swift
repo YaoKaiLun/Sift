@@ -128,6 +128,29 @@ final class DiffDocumentBuilderTests: XCTestCase {
         XCTAssertTrue(copied.contains("+fresh") || copied.contains("fresh"))
     }
 
+    func testSurroundingRangeIncludesEightLinesEachSide() {
+        var lines: [DiffLine] = []
+        for number in 1...20 {
+            lines.append(DiffLine(
+                kind: .context,
+                oldLineNumber: number,
+                newLineNumber: number,
+                text: "LINE_\(number)_END"))
+        }
+        let document = DiffDocumentBuilder.build(makeDiff(lines, oldStart: 1, newStart: 1))
+        let ns = document.text.string as NSString
+        let target = ns.range(of: "LINE_10_END")
+        XCTAssertNotEqual(target.location, NSNotFound)
+
+        let surrounding = DiffDocumentBuilder.surroundingRange(
+            of: target, in: document.text.string, extraLines: 8)
+        let copied = DiffDocumentBuilder.copyableString(from: document.text, range: surrounding)
+        XCTAssertTrue(copied.contains("LINE_2_END"), "选区前 8 行应包含 line2")
+        XCTAssertTrue(copied.contains("LINE_18_END"), "选区后 8 行应包含 line18")
+        XCTAssertFalse(copied.contains("LINE_1_END"), "再往前第 9 行不应进入上下文")
+        XCTAssertFalse(copied.contains("LINE_19_END"), "再往后第 9 行不应进入上下文")
+    }
+
     /// 性能护栏：大 diff 的文档构建必须够快，不然点开文件那 100ms 预算就爆了。
     func testBuildsLargeDocumentQuickly() {
         let lines = (0..<10_000).map { index in
