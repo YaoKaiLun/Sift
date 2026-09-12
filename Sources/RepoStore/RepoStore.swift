@@ -110,7 +110,11 @@ public final class RepoStore {
     /// 在途任务句柄。切换选择时取消旧任务——这是"切换即取消"约束的落点。
     private var fileListTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
-    private var explainTask: Task<Void, Never>?
+    private(set) var explainTask: Task<Void, Never>?
+    /// 测试可注入；生产路径走 `OpenAICompatibleProvider`。
+    var explainProviderOverride: (any ExplainProvider)?
+    /// 解释流世代。过期的完成/取消回写必须丢掉，不能动当前句柄。
+    private var explainGeneration: UInt64 = 0
     private var lastExplainSelectedText = ""
     private var lastExplainSurroundingText = ""
     private var lastExplainFileDiff = ""
@@ -294,6 +298,7 @@ public final class RepoStore {
 
     public func closeExplainPanel() {
         showsExplainPanel = false
+        explainGeneration += 1
         explainTask?.cancel()
         explainTask = nil
     }
@@ -519,6 +524,7 @@ public final class RepoStore {
     }
 
     private func resetExplainConversation(keepingPanel: Bool) {
+        explainGeneration += 1
         explainTask?.cancel()
         explainTask = nil
         explainHistory = []
@@ -538,6 +544,8 @@ public final class RepoStore {
         explainTask?.cancel()
         explainError = nil
         explainStreamingText = ""
+        explainGeneration += 1
+        let generation = explainGeneration
 
         let request = ExplainRequest(
             path: selectedFile?.path ?? "",
@@ -545,7 +553,7 @@ public final class RepoStore {
             surroundingText: lastExplainSurroundingText,
             fileDiff: lastExplainFileDiff,
             history: explainHistory)
-        let provider = OpenAICompatibleProvider(
+        let provider: any ExplainProvider = explainProviderOverride ?? OpenAICompatibleProvider(
             baseURL: explainBaseURL,
             apiKey: explainAPIKey,
             model: explainModel)
@@ -557,11 +565,12 @@ public final class RepoStore {
                     try Task.checkCancellation()
                     assembled += chunk
                     await MainActor.run {
-                        self?.explainStreamingText = assembled
+                        guard let self, self.explainGeneration == generation else { return }
+                        self.explainStreamingText = assembled
                     }
                 }
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self, self.explainGeneration == generation else { return }
                     if !assembled.isEmpty {
                         self.explainHistory.append(ExplainTurn(role: .assistant, text: assembled))
                     }
@@ -570,13 +579,17 @@ public final class RepoStore {
                 }
             } catch {
                 if Self.isCancellation(error) {
-                    await MainActor.run { self?.explainTask = nil }
+                    await MainActor.run {
+                        guard let self, self.explainGeneration == generation else { return }
+                        self.explainTask = nil
+                    }
                     return
                 }
                 await MainActor.run {
-                    self?.explainError = Self.explainErrorMessage(error)
-                    self?.explainStreamingText = assembled
-                    self?.explainTask = nil
+                    guard let self, self.explainGeneration == generation else { return }
+                    self.explainError = Self.explainErrorMessage(error)
+                    self.explainStreamingText = assembled
+                    self.explainTask = nil
                 }
             }
         }

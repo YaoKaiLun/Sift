@@ -23,7 +23,7 @@ let package = Package(
                 resources: [.process("Resources")]),
         .testTarget(name: "GitKitTests", dependencies: ["GitKit"]),
         .testTarget(name: "DiffEngineTests", dependencies: ["DiffEngine", "SiftUI"]),
-        .testTarget(name: "RepoStoreTests", dependencies: ["RepoStore"]),
+        .testTarget(name: "RepoStoreTests", dependencies: ["RepoStore", "AIClient"]),
         .testTarget(name: "HighlighterTests", dependencies: ["Highlighter"]),
         .testTarget(name: "AIClientTests", dependencies: ["AIClient"]),
         .testTarget(name: "PerformanceTests", dependencies: ["GitKit", "DiffEngine", "RepoStore"]),
