@@ -108,4 +108,55 @@ public struct GitRepository: Sendable {
         let patch = PatchBuilder.build(hunk: hunk, path: path, originalPath: originalPath, kind: kind)
         try await apply(patch: patch, cached: false, reverse: true)
     }
+
+    /// 工作区或暂存区版本的 blame。未跟踪、失败、二进制返回空。
+    public func blame(path: String, staged: Bool) async -> [BlameLine] {
+        if staged {
+            return await blameStaged(path: path)
+        }
+        if isBinaryFile(at: root.appendingPathComponent(path)) { return [] }
+        let output = try? await runner.runAllowingFailure(
+            ["blame", "-p", "--", path], in: root, optionalLocks: true)
+        guard let output, output.exitCode == 0 else { return [] }
+        return BlameParser.parse(output.stdout)
+    }
+
+    /// commit 的 medium header 与纯 patch。全 0 SHA（尚未提交）返回 nil。
+    public func showCommit(sha: String) async -> (header: String, patch: String)? {
+        guard sha.contains(where: { $0 != "0" }) else { return nil }
+        let headerOut = try? await runner.runAllowingFailure(
+            ["show", "--format=medium", "--no-patch", sha], in: root, optionalLocks: true)
+        let patchOut = try? await runner.runAllowingFailure(
+            ["show", "--format=", sha], in: root, optionalLocks: true)
+        guard let headerOut, headerOut.exitCode == 0,
+              let patchOut, patchOut.exitCode == 0 else { return nil }
+        return (
+            String(decoding: headerOut.stdout, as: UTF8.self),
+            String(decoding: patchOut.stdout, as: UTF8.self)
+        )
+    }
+
+    private func blameStaged(path: String) async -> [BlameLine] {
+        let shown = try? await runner.runAllowingFailure(
+            ["show", ":\(path)"], in: root, optionalLocks: true)
+        guard let shown, shown.exitCode == 0 else { return [] }
+        if isBinary(shown.stdout) { return [] }
+        let blamed = try? await runner.runAllowingFailure(
+            ["blame", "-p", "--contents", "-", "--", path],
+            in: root, stdin: shown.stdout, optionalLocks: true)
+        guard let blamed, blamed.exitCode == 0 else { return [] }
+        return BlameParser.parse(blamed.stdout)
+    }
+
+    /// git 把前 8KB 含 NUL 的内容当二进制。
+    private func isBinaryFile(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let prefix = (try? handle.read(upToCount: 8000)) ?? Data()
+        return isBinary(prefix)
+    }
+
+    private func isBinary(_ data: Data) -> Bool {
+        data.prefix(8000).contains(0)
+    }
 }

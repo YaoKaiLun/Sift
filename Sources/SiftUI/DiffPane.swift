@@ -9,6 +9,8 @@ struct DiffPane: View {
     @Environment(RepoStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmsDelete = false
+    @State private var blameLines: [BlameLine] = []
+    @State private var continuousBlame: [String: [BlameLine]] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,6 +41,9 @@ struct DiffPane: View {
             } else {
                 await buildDocumentIfNeeded()
             }
+        }
+        .task(id: blameTaskID) {
+            await loadBlameIfNeeded()
         }
     }
 
@@ -119,7 +124,13 @@ struct DiffPane: View {
                          onExpandCollapsedFile: { id in
                              store.expandContinuousCollapsed(id: id)
                          },
-                         hunkIsStaged: store.usesContinuousDiff ? { store.hunkIsStaged($0) } : nil)
+                         hunkIsStaged: store.usesContinuousDiff ? { store.hunkIsStaged($0) } : nil,
+                         showsBlame: store.showsBlame,
+                         blameByNewLine: blameLookup,
+                         blameByFileID: continuousBlameLookup,
+                         loadBlameCommit: { line in
+                             await loadBlameCommit(line)
+                         })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if store.showsExplainPanel {
                 Divider()
@@ -342,6 +353,78 @@ struct DiffPane: View {
               store.usesContinuousDiff else { return }
         store.updateDiffDocument(storeDocument(from: highlighted), epoch: epoch)
     }
+
+    private var blameTaskID: String {
+        if !store.showsBlame { return "off" }
+        let worktree = store.selectedWorktree?.path.path ?? ""
+        if store.usesContinuousDiff {
+            let ids = store.continuousLoaded.keys.sorted().joined(separator: ",")
+            return "c:\(worktree)|\(ids)"
+        }
+        return "s:\(worktree)|\(store.selectedFile?.path ?? "")|\(store.selectedFileIsStaged)"
+    }
+
+    private var blameLookup: [Int: BlameLine] {
+        Dictionary(blameLines.map { ($0.newLineNumber, $0) }, uniquingKeysWith: { _, last in last })
+    }
+
+    private var continuousBlameLookup: [String: [Int: BlameLine]] {
+        Dictionary(uniqueKeysWithValues: continuousBlame.map { id, lines in
+            (id, Dictionary(lines.map { ($0.newLineNumber, $0) }, uniquingKeysWith: { _, last in last }))
+        })
+    }
+
+    @MainActor
+    private func loadBlameIfNeeded() async {
+        guard store.showsBlame else {
+            blameLines = []
+            continuousBlame = [:]
+            return
+        }
+        guard let worktree = store.selectedWorktree else {
+            blameLines = []
+            continuousBlame = [:]
+            return
+        }
+        let repo = GitRepository(root: worktree.path)
+        if store.usesContinuousDiff {
+            var next: [String: [BlameLine]] = [:]
+            for (id, loaded) in store.continuousLoaded {
+                if Task.isCancelled { return }
+                guard case .ready = loaded,
+                      let entry = store.continuousPlan.first(where: { $0.id == id }),
+                      !entry.status.isUntracked else {
+                    continue
+                }
+                next[id] = await repo.blame(path: entry.status.path, staged: entry.staged)
+            }
+            guard !Task.isCancelled else { return }
+            continuousBlame = next
+            blameLines = []
+            return
+        }
+        continuousBlame = [:]
+        guard let file = store.selectedFile, !file.isUntracked else {
+            blameLines = []
+            return
+        }
+        let lines = await repo.blame(path: file.path, staged: store.selectedFileIsStaged)
+        guard !Task.isCancelled else { return }
+        blameLines = lines
+    }
+
+    private func loadBlameCommit(_ line: BlameLine) async -> BlameCommitContent {
+        let timeText = BlameCommitContent.formatted(line.authorTime)
+        guard let worktree = store.selectedWorktree,
+              let shown = await GitRepository(root: worktree.path).showCommit(sha: line.sha) else {
+            return BlameCommitContent.fallback(for: line)
+        }
+        return BlameCommitContent(
+            author: line.author,
+            timeText: timeText,
+            header: shown.header,
+            patch: CommitPatchCollapser.collapse(shown.patch))
+    }
 }
 
 /// 第三遍：只改 code 列 foregroundColor，其它属性（底色、gutter、role）保持不动。
@@ -448,3 +531,66 @@ private struct CollapsedFileView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+
+/// commit patch 里生成文件 / 超大文件按主视图同一套规则折叠。
+enum CommitPatchCollapser {
+    static func collapse(_ patch: String, detector: GeneratedFileDetector = GeneratedFileDetector()) -> String {
+        guard !patch.isEmpty else { return patch }
+        return splitDiffs(patch).map { chunk in
+            let path = path(in: chunk) ?? ""
+            let lineCount = chunk.split(separator: "\n", omittingEmptySubsequences: false).count
+            if let reason = detector.reason(forPath: path, lineCount: lineCount, byteCount: chunk.utf8.count) {
+                return collapsedStub(chunk, reason: reason)
+            }
+            return chunk
+        }.joined()
+    }
+
+    private static func splitDiffs(_ patch: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: "^diff --git ", options: .anchorsMatchLines) else {
+            return [patch]
+        }
+        let ns = patch as NSString
+        let matches = regex.matches(in: patch, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return [patch] }
+        var parts: [String] = []
+        if matches[0].range.location > 0 {
+            parts.append(ns.substring(to: matches[0].range.location))
+        }
+        for (index, match) in matches.enumerated() {
+            let start = match.range.location
+            let end = index + 1 < matches.count ? matches[index + 1].range.location : ns.length
+            parts.append(ns.substring(with: NSRange(location: start, length: end - start)))
+        }
+        return parts
+    }
+
+    private static func path(in chunk: String) -> String? {
+        for line in chunk.split(separator: "\n") {
+            if line.hasPrefix("+++ b/") {
+                return String(line.dropFirst(6))
+            }
+        }
+        for line in chunk.split(separator: "\n") {
+            if line.hasPrefix("diff --git ") {
+                let rest = line.dropFirst("diff --git ".count)
+                if let last = rest.split(separator: " ").last, last.hasPrefix("b/") {
+                    return String(last.dropFirst(2))
+                }
+            }
+            if line.hasPrefix("--- a/") {
+                return String(line.dropFirst(6))
+            }
+        }
+        return nil
+    }
+
+    private static func collapsedStub(_ chunk: String, reason: GeneratedFileReason) -> String {
+        let header = chunk.split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix { !$0.hasPrefix("@@") }
+            .joined(separator: "\n")
+        let trimmed = header.trimmingCharacters(in: .newlines)
+        return trimmed + "\n（已折叠：\(reason.explanation)）\n"
+    }
+}
+

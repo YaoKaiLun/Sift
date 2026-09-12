@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GitKit
 
 /// hunk 头悬停时出现的暂存 / 取消暂存 / 丢弃操作。未跟踪、二进制、空、折叠不传。
 struct HunkActions {
@@ -31,6 +32,10 @@ struct DiffTextView: NSViewRepresentable {
     var onDidReveal: (() -> Void)?
     var onExpandCollapsedFile: ((String) -> Void)?
     var hunkIsStaged: ((String) -> Bool?)?
+    var showsBlame: Bool = false
+    var blameByNewLine: [Int: BlameLine] = [:]
+    var blameByFileID: [String: [Int: BlameLine]] = [:]
+    var loadBlameCommit: ((BlameLine) async -> BlameCommitContent)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -48,7 +53,11 @@ struct DiffTextView: NSViewRepresentable {
                                     revealRange: revealRange,
                                     onDidReveal: onDidReveal,
                                     onExpandCollapsedFile: onExpandCollapsedFile,
-                                    hunkIsStaged: hunkIsStaged)
+                                    hunkIsStaged: hunkIsStaged,
+                                    showsBlame: showsBlame,
+                                    blameByNewLine: blameByNewLine,
+                                    blameByFileID: blameByFileID,
+                                    loadBlameCommit: loadBlameCommit)
         return container
     }
 
@@ -63,7 +72,11 @@ struct DiffTextView: NSViewRepresentable {
                                     revealRange: revealRange,
                                     onDidReveal: onDidReveal,
                                     onExpandCollapsedFile: onExpandCollapsedFile,
-                                    hunkIsStaged: hunkIsStaged)
+                                    hunkIsStaged: hunkIsStaged,
+                                    showsBlame: showsBlame,
+                                    blameByNewLine: blameByNewLine,
+                                    blameByFileID: blameByFileID,
+                                    loadBlameCommit: loadBlameCommit)
     }
 
     @MainActor
@@ -78,12 +91,17 @@ struct DiffTextView: NSViewRepresentable {
         var onDidReveal: (() -> Void)?
         var onExpandCollapsedFile: ((String) -> Void)?
         var hunkIsStaged: ((String) -> Bool?)?
+        var showsBlame = false
+        var blameByNewLine: [Int: BlameLine] = [:]
+        var blameByFileID: [String: [Int: BlameLine]] = [:]
+        var loadBlameCommit: ((BlameLine) async -> BlameCommitContent)?
         private weak var container: NSView?
         private weak var scrollView: NSScrollView?
         private weak var textView: NSTextView?
         private weak var rightScrollView: NSScrollView?
         private weak var rightTextView: NSTextView?
         private var overlay: HunkOverlayView?
+        private var blameOverlay: BlameOverlayView?
         private var buttonStack: NSStackView?
         private var explainButton: NSButton?
         private weak var selectionTextView: NSTextView?
@@ -93,6 +111,11 @@ struct DiffTextView: NSViewRepresentable {
         private var isSplit = false
         private var isSyncing = false
         private var lastRevealedRange: NSRange?
+        private var blameHits: [(rect: NSRect, line: BlameLine)] = []
+        private var blamePopover: NSPopover?
+        private var blameDetailTask: Task<Void, Never>?
+
+        var blameHitRects: [NSRect] { blameHits.map(\.rect) }
 
         private struct ButtonIdentity: Equatable {
             var hoveredID: String
@@ -113,7 +136,11 @@ struct DiffTextView: NSViewRepresentable {
                      revealRange: NSRange?,
                      onDidReveal: (() -> Void)?,
                      onExpandCollapsedFile: ((String) -> Void)?,
-                     hunkIsStaged: ((String) -> Bool?)?) {
+                     hunkIsStaged: ((String) -> Bool?)?,
+                     showsBlame: Bool,
+                     blameByNewLine: [Int: BlameLine],
+                     blameByFileID: [String: [Int: BlameLine]],
+                     loadBlameCommit: ((BlameLine) async -> BlameCommitContent)?) {
             self.container = container
             self.document = document
             self.hunkActions = hunkActions
@@ -125,10 +152,18 @@ struct DiffTextView: NSViewRepresentable {
             self.onDidReveal = onDidReveal
             self.onExpandCollapsedFile = onExpandCollapsedFile
             self.hunkIsStaged = hunkIsStaged
+            self.showsBlame = showsBlame
+            self.blameByNewLine = blameByNewLine
+            self.blameByFileID = blameByFileID
+            self.loadBlameCommit = loadBlameCommit
+            if !showsBlame {
+                blamePopover?.performClose(nil)
+            }
             let wantSplit = document.splitRight != nil
             if container.subviews.isEmpty || wantSplit != isSplit {
                 rebuildHierarchy(split: wantSplit)
             }
+            applyBlameInsets()
             let origin = scrollView?.documentVisibleRect.origin
             if let textView {
                 replaceText(in: textView, with: document.text, preserveVisibleRect: preserveVisibleRect)
@@ -161,6 +196,7 @@ struct DiffTextView: NSViewRepresentable {
             NotificationCenter.default.removeObserver(self)
             container?.subviews.forEach { $0.removeFromSuperview() }
             overlay = nil
+            blameOverlay = nil
             buttonStack = nil
             explainButton = nil
             selectionTextView = nil
@@ -192,6 +228,7 @@ struct DiffTextView: NSViewRepresentable {
                 container.addSubview(splitView)
 
                 attachOverlay(to: leftScroll)
+                attachBlameOverlay(to: rightScroll)
                 observeScroll(leftScroll)
                 observeScroll(rightScroll)
             } else {
@@ -202,6 +239,7 @@ struct DiffTextView: NSViewRepresentable {
                 single.autoresizingMask = [.width, .height]
                 container.addSubview(single)
                 attachOverlay(to: single)
+                attachBlameOverlay(to: single)
                 observeScroll(single)
             }
         }
@@ -250,6 +288,22 @@ struct DiffTextView: NSViewRepresentable {
             overlay.coordinator = self
             scrollView.addSubview(overlay, positioned: .above, relativeTo: nil)
             self.overlay = overlay
+        }
+
+        private func attachBlameOverlay(to scrollView: NSScrollView) {
+            let overlay = BlameOverlayView()
+            overlay.autoresizingMask = [.width, .height]
+            overlay.frame = scrollView.bounds
+            overlay.coordinator = self
+            scrollView.addSubview(overlay, positioned: .above, relativeTo: nil)
+            self.blameOverlay = overlay
+        }
+
+        private func applyBlameInsets() {
+            let extra = showsBlame ? BlameGutterMetrics.columnWidth : 0
+            let inset = NSSize(width: 10 + extra, height: 6)
+            textView?.textContainerInset = inset
+            rightTextView?.textContainerInset = inset
         }
 
         private func observeScroll(_ scrollView: NSScrollView) {
@@ -345,6 +399,7 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         deinit {
+            blameDetailTask?.cancel()
             NotificationCenter.default.removeObserver(self)
         }
 
@@ -360,6 +415,12 @@ struct DiffTextView: NSViewRepresentable {
 
         @objc func relayoutOverlay() {
             overlay?.frame = scrollView?.bounds ?? .zero
+            if isSplit {
+                blameOverlay?.frame = rightScrollView?.bounds ?? .zero
+            } else {
+                blameOverlay?.frame = scrollView?.bounds ?? .zero
+            }
+            rebuildBlameHits()
             updateExplainButton()
             if let hoveredCollapsedID,
                let header = document.fileHeaders.first(where: { $0.id == hoveredCollapsedID && $0.isCollapsed }),
@@ -688,6 +749,144 @@ struct DiffTextView: NSViewRepresentable {
             rect.origin.y += textView.textContainerOrigin.y
             return overlay.convert(rect, from: textView)
         }
+
+        func blameHit(at pointInOverlay: NSPoint) -> BlameLine? {
+            blameHits.first(where: { $0.rect.contains(pointInOverlay) })?.line
+        }
+
+        func drawBlame(in _: NSView) {
+            guard showsBlame else { return }
+            let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: NSColor.tertiaryLabelColor,
+            ]
+            for hit in blameHits {
+                let name = String(hit.line.author.prefix(BlameGutterMetrics.maxAuthorChars)) as NSString
+                let size = name.size(withAttributes: attrs)
+                let y = hit.rect.midY - size.height / 2
+                name.draw(at: NSPoint(x: hit.rect.minX + 2, y: y), withAttributes: attrs)
+            }
+        }
+
+        func blameClicked(at pointInOverlay: NSPoint) {
+            guard let hit = blameHits.first(where: { $0.rect.contains(pointInOverlay) }) else { return }
+            blameDetailTask?.cancel()
+            let line = hit.line
+            let rect = hit.rect
+            blameDetailTask = Task { [weak self] in
+                let content: BlameCommitContent
+                if let loader = self?.loadBlameCommit {
+                    content = await loader(line)
+                } else {
+                    content = BlameCommitContent.fallback(for: line)
+                }
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.showBlamePopover(content, relativeTo: rect)
+                }
+            }
+        }
+
+        private func rebuildBlameHits() {
+            blameHits = []
+            defer { blameOverlay?.needsDisplay = true }
+            guard showsBlame, let overlay = blameOverlay else { return }
+            let target = isSplit ? rightTextView : textView
+            guard let target, let storage = target.textStorage else { return }
+            let ns = storage.string as NSString
+            var location = 0
+            while location < ns.length {
+                let lineRange = ns.lineRange(for: NSRange(location: location, length: 0))
+                defer { location = NSMaxRange(lineRange) }
+                guard let parsed = parseDiffBodyLine(storage, range: lineRange),
+                      parsed.marker != "+",
+                      parsed.marker != "-",
+                      let newNumber = parsed.newLineNumber else { continue }
+                guard let line = blameLine(newNumber: newNumber, at: lineRange.location) else { continue }
+                guard let lineRect = lineRectInOverlay(for: lineRange, textView: target, overlay: overlay)
+                else { continue }
+                let column = NSRect(
+                    x: lineRect.minX,
+                    y: lineRect.minY,
+                    width: BlameGutterMetrics.columnWidth,
+                    height: max(lineRect.height, 1))
+                blameHits.append((column, line))
+            }
+            if let overlay = blameOverlay, let window = overlay.window {
+                window.invalidateCursorRects(for: overlay)
+            }
+        }
+
+        private func blameLine(newNumber: Int, at location: Int) -> BlameLine? {
+            if !blameByFileID.isEmpty, let fileID = fileID(containing: location) {
+                return blameByFileID[fileID]?[newNumber]
+            }
+            return blameByNewLine[newNumber]
+        }
+
+        private func fileID(containing location: Int) -> String? {
+            var current: String?
+            for header in document.fileHeaders where header.range.location <= location {
+                current = header.id
+            }
+            return current
+        }
+
+        private func parseDiffBodyLine(_ storage: NSAttributedString, range: NSRange) -> (marker: Character, newLineNumber: Int?)? {
+            let ns = storage.string as NSString
+            var gutter = ""
+            var marker: Character?
+            var isHeader = false
+            storage.enumerateAttributes(in: range) { attrs, run, _ in
+                let role = attrs[.siftRole] as? String
+                if role == "header" {
+                    isHeader = true
+                } else if role == "gutter" {
+                    gutter += ns.substring(with: run)
+                } else if role == "code", marker == nil {
+                    marker = ns.substring(with: run).first
+                }
+            }
+            guard !isHeader, !gutter.isEmpty, let marker else { return nil }
+            return (marker, newLineNumber(fromGutter: gutter))
+        }
+
+        private func newLineNumber(fromGutter gutter: String) -> Int? {
+            let trimmed = gutter.trimmingCharacters(in: .whitespaces)
+            if gutter.count >= 10 {
+                let newField = gutter.dropFirst(5).prefix(4)
+                    .trimmingCharacters(in: .whitespaces)
+                return Int(newField)
+            }
+            return Int(trimmed)
+        }
+
+        private func lineRectInOverlay(for range: NSRange,
+                                        textView: NSTextView,
+                                        overlay: NSView) -> NSRect? {
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return nil }
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: range, actualCharacterRange: nil)
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x = 0
+            rect.size.width = BlameGutterMetrics.columnWidth
+            rect.origin.y += textView.textContainerOrigin.y
+            return overlay.convert(rect, from: textView)
+        }
+
+        private func showBlamePopover(_ content: BlameCommitContent, relativeTo rect: NSRect) {
+            guard let overlay = blameOverlay else { return }
+            blamePopover?.performClose(nil)
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.contentSize = NSSize(width: 480, height: 380)
+            popover.contentViewController = NSHostingController(
+                rootView: BlamePopoverView(content: content))
+            blamePopover = popover
+            popover.show(relativeTo: rect, of: overlay, preferredEdge: .maxX)
+        }
     }
 }
 
@@ -724,6 +923,98 @@ private final class HunkOverlayView: NSView {
             }
         }
         return nil
+    }
+}
+
+/// 叠在 scroll view 左侧：blame 短名列，只拦截这一列的点击。
+private final class BlameOverlayView: NSView {
+    weak var coordinator: DiffTextView.Coordinator?
+
+    override var isFlipped: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        coordinator?.drawBlame(in: self)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if coordinator?.blameHit(at: local) != nil {
+            return self
+        }
+        return nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        coordinator?.blameClicked(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func resetCursorRects() {
+        discardCursorRects()
+        guard let coordinator else { return }
+        for hit in coordinator.blameHitRects {
+            addCursorRect(hit, cursor: .pointingHand)
+        }
+    }
+}
+
+enum BlameGutterMetrics {
+    static let maxAuthorChars = 8
+    static var columnWidth: CGFloat {
+        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        return ceil(font.maximumAdvancement.width * CGFloat(maxAuthorChars)) + 8
+    }
+}
+
+struct BlameCommitContent {
+    let author: String
+    let timeText: String
+    let header: String
+    let patch: String
+
+    static func fallback(for line: BlameLine) -> BlameCommitContent {
+        BlameCommitContent(
+            author: line.author,
+            timeText: BlameCommitContent.formatted(line.authorTime),
+            header: line.summary,
+            patch: "")
+    }
+
+    static func formatted(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
+private struct BlamePopoverView: View {
+    let content: BlameCommitContent
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(content.author)
+                    .font(.headline)
+                Text(content.timeText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                if !content.header.isEmpty {
+                    Text(content.header)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                if !content.patch.isEmpty {
+                    Divider()
+                    Text(content.patch)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: 480, height: 360)
     }
 }
 
