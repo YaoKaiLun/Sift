@@ -47,6 +47,7 @@ struct SectionHeaderRow: View {
 
     var body: some View {
         HStack(spacing: Theme.rowSpacing) {
+            Color.clear.frame(width: Theme.checkboxColumnWidth)
             Color.clear.frame(width: Theme.statusColumnWidth)
             Text(title)
                 .font(Theme.sectionFont)

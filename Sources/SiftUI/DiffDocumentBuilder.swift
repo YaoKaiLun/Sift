@@ -1,7 +1,27 @@
 import AppKit
 import GitKit
 
-/// 把 FileDiff 转成一个可直接交给 NSTextView 的 NSAttributedString。
+public struct DiffHunkHeader: Sendable, Equatable {
+    public let id: String
+    public let range: NSRange
+
+    public init(id: String, range: NSRange) {
+        self.id = id
+        self.range = range
+    }
+}
+
+public struct DiffDocument: @unchecked Sendable {
+    public let text: NSAttributedString
+    public let hunkHeaders: [DiffHunkHeader]
+
+    public init(text: NSAttributedString, hunkHeaders: [DiffHunkHeader] = []) {
+        self.text = text
+        self.hunkHeaders = hunkHeaders
+    }
+}
+
+/// 把 FileDiff 转成一篇带 hunk 头区间的 DiffDocument，交给 NSTextView 显示。
 ///
 /// 纯函数，没有 UI 依赖，因此可以完整测试，也可以放到主线程之外去跑。
 ///
@@ -11,12 +31,14 @@ import GitKit
 public enum DiffDocumentBuilder {
     private static let gutterWidth = 4
 
-    public static func build(_ diff: FileDiff) -> NSAttributedString {
+    public static func build(_ diff: FileDiff) -> DiffDocument {
         guard case .textual(let hunks) = diff.content, !hunks.isEmpty else {
-            return NSAttributedString()
+            return DiffDocument(text: NSAttributedString(), hunkHeaders: [])
         }
 
         let document = NSMutableAttributedString()
+        var headers: [DiffHunkHeader] = []
+        headers.reserveCapacity(hunks.count)
         let paragraph = NSMutableParagraphStyle()
         paragraph.minimumLineHeight = Theme.codeLineHeight
         paragraph.maximumLineHeight = Theme.codeLineHeight
@@ -29,21 +51,24 @@ public enum DiffDocumentBuilder {
 
         for (index, hunk) in hunks.enumerated() {
             if index > 0 { document.append(NSAttributedString(string: "\n")) }
-            document.append(headerLine(for: hunk, paragraph: paragraph, font: font))
+            let location = document.length
+            let header = headerLine(for: hunk, paragraph: paragraph, font: font)
+            document.append(header)
+            headers.append(DiffHunkHeader(
+                id: hunk.id,
+                range: NSRange(location: location, length: header.length)))
             for line in hunk.lines {
                 document.append(bodyLine(line, paragraph: paragraph, font: font, colors: colors))
             }
         }
-        return document
+        return DiffDocument(text: document, hunkHeaders: headers)
     }
 
-    /// 把大文档的构建挪出主线程。NSAttributedString 不是 Sendable，
-    /// 用盒子跨隔离域交回调用方。
-    public static func buildOffMainActor(_ diff: FileDiff) async -> NSAttributedString {
-        let box = await Task.detached(priority: .userInitiated) {
-            AttributedStringBox(build(diff))
+    /// 把大文档的构建挪出主线程。DiffDocument 以 @unchecked Sendable 跨隔离域交回。
+    public static func buildOffMainActor(_ diff: FileDiff) async -> DiffDocument {
+        await Task.detached(priority: .userInitiated) {
+            build(diff)
         }.value
-        return box.value
     }
 
     private static func headerLine(for hunk: Hunk,
@@ -127,9 +152,4 @@ public enum DiffDocumentBuilder {
             }
         }
     }
-}
-
-private struct AttributedStringBox: @unchecked Sendable {
-    let value: NSAttributedString
-    init(_ value: NSAttributedString) { self.value = value }
 }

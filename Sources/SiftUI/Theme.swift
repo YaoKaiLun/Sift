@@ -40,6 +40,8 @@ public enum Theme {
     public static let sectionTopGap: CGFloat = 10
     public static let horizontalPadding: CGFloat = 10
     public static let rowSpacing: CGFloat = 6
+    /// 文件行复选框所在的左侧固定栏。
+    public static let checkboxColumnWidth: CGFloat = 18
     /// 状态字母/图标所在的左侧固定栏。
     public static let statusColumnWidth: CGFloat = 16
     /// +/− 所在的右侧固定栏。

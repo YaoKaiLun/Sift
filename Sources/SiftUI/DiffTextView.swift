@@ -1,6 +1,17 @@
 import SwiftUI
 import AppKit
 
+/// hunk 头悬停时出现的暂存 / 取消暂存 / 丢弃操作。未跟踪、二进制、空、折叠不传。
+struct HunkActions {
+    var showsStage: Bool
+    var showsUnstage: Bool
+    var showsDiscard: Bool
+    var isEnabled: Bool
+    var onStage: (String) -> Void
+    var onUnstage: (String) -> Void
+    var onDiscard: (String) -> Void
+}
+
 /// NSTextView 的 SwiftUI 封装。
 ///
 /// 为什么不用 SwiftUI 的 Text：SwiftUI 没有能处理上万行文档的文本视图。
@@ -10,7 +21,12 @@ import AppKit
 /// 并且**绝不**在滚动过程中改动 text storage。计划二的语法高亮必须走
 /// attribute-only 的覆盖路径，不能重建文档，否则滚动位置会跳。
 struct DiffTextView: NSViewRepresentable {
-    let document: NSAttributedString
+    let document: DiffDocument
+    var hunkActions: HunkActions?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
@@ -39,25 +55,243 @@ struct DiffTextView: NSViewRepresentable {
         textView.isHorizontallyResizable = true
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                   height: CGFloat.greatestFiniteMagnitude)
+
+        context.coordinator.attach(scrollView: scrollView, textView: textView)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView,
               let storage = textView.textStorage else { return }
-        if storage.string == document.string {
-            if storage.isEqual(to: document) { return }
-            // attribute-only：不重置滚动位置
-            storage.beginEditing()
-            document.enumerateAttributes(in: NSRange(location: 0, length: document.length)) { attrs, range, _ in
-                storage.setAttributes(attrs, range: range)
+        let text = document.text
+        context.coordinator.document = document
+        context.coordinator.hunkActions = hunkActions
+
+        if storage.string == text.string {
+            if !storage.isEqual(to: text) {
+                // attribute-only：不重置滚动位置
+                storage.beginEditing()
+                text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attrs, range, _ in
+                    storage.setAttributes(attrs, range: range)
+                }
+                storage.endEditing()
             }
+        } else {
+            storage.beginEditing()
+            storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: text)
             storage.endEditing()
-            return
+            textView.scroll(NSPoint(x: 0, y: 0))
         }
-        storage.beginEditing()
-        storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: document)
-        storage.endEditing()
-        textView.scroll(NSPoint(x: 0, y: 0))
+        context.coordinator.relayoutOverlay()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var document = DiffDocument(text: NSAttributedString(), hunkHeaders: [])
+        var hunkActions: HunkActions?
+        private weak var scrollView: NSScrollView?
+        private weak var textView: NSTextView?
+        private var overlay: HunkOverlayView?
+        private var buttonStack: NSStackView?
+        private var hoveredID: String?
+
+        func attach(scrollView: NSScrollView, textView: NSTextView) {
+            self.scrollView = scrollView
+            self.textView = textView
+
+            let overlay = HunkOverlayView()
+            overlay.autoresizingMask = [.width, .height]
+            overlay.frame = scrollView.bounds
+            overlay.coordinator = self
+            scrollView.addSubview(overlay, positioned: .above, relativeTo: nil)
+            self.overlay = overlay
+
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(relayoutOverlay),
+                name: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(relayoutOverlay),
+                name: NSScrollView.didLiveScrollNotification,
+                object: scrollView
+            )
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        func mouseMoved(at pointInOverlay: NSPoint) {
+            guard let overlay, let scrollView else { return }
+            let pointInScroll = overlay.convert(pointInOverlay, to: scrollView)
+            let hitID = hunkID(at: pointInScroll)
+            if hitID != hoveredID {
+                hoveredID = hitID
+            }
+            relayoutOverlay()
+        }
+
+        func mouseExited() {
+            hoveredID = nil
+            relayoutOverlay()
+        }
+
+        @objc func relayoutOverlay() {
+            overlay?.frame = scrollView?.bounds ?? .zero
+            guard let hoveredID, hunkActions != nil else {
+                buttonStack?.isHidden = true
+                return
+            }
+            guard let header = document.hunkHeaders.first(where: { $0.id == hoveredID }),
+                  let headerRect = headerRectInScroll(for: header) else {
+                buttonStack?.isHidden = true
+                return
+            }
+            showButtons(headerRect: headerRect)
+        }
+
+        @objc func stageClicked() {
+            guard let hoveredID else { return }
+            hunkActions?.onStage(hoveredID)
+        }
+
+        @objc func unstageClicked() {
+            guard let hoveredID else { return }
+            hunkActions?.onUnstage(hoveredID)
+        }
+
+        @objc func discardClicked() {
+            guard let hoveredID else { return }
+            hunkActions?.onDiscard(hoveredID)
+        }
+
+        private func hunkID(at pointInScroll: NSPoint) -> String? {
+            if let buttonStack, !buttonStack.isHidden,
+               let overlay,
+               buttonStack.frame.contains(overlay.convert(pointInScroll, from: scrollView)) {
+                return hoveredID
+            }
+            for header in document.hunkHeaders {
+                guard let rect = headerRectInScroll(for: header) else { continue }
+                let hit = NSRect(
+                    x: 0,
+                    y: rect.minY,
+                    width: scrollView?.bounds.width ?? rect.width,
+                    height: max(rect.height, Theme.codeLineHeight))
+                if hit.contains(pointInScroll) {
+                    return header.id
+                }
+            }
+            return nil
+        }
+
+        private func headerRectInScroll(for header: DiffHunkHeader) -> NSRect? {
+            guard let textView,
+                  let scrollView,
+                  let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else { return nil }
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: header.range, actualCharacterRange: nil)
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x += textView.textContainerOrigin.x
+            rect.origin.y += textView.textContainerOrigin.y
+            return textView.convert(rect, to: scrollView)
+        }
+
+        private func showButtons(headerRect: NSRect) {
+            guard let overlay, let actions = hunkActions, let scrollView else { return }
+            let stack = buttonStack ?? makeButtonStack()
+            if buttonStack == nil {
+                overlay.addSubview(stack)
+                buttonStack = stack
+            }
+            rebuildButtons(in: stack, actions: actions)
+            stack.isHidden = false
+            stack.layoutSubtreeIfNeeded()
+            let size = stack.fittingSize
+            let x = max(8, scrollView.bounds.width - size.width - 8)
+            let y = headerRect.midY - size.height / 2
+            stack.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+        }
+
+        private func makeButtonStack() -> NSStackView {
+            let stack = NSStackView()
+            stack.orientation = .horizontal
+            stack.alignment = .centerY
+            stack.spacing = 4
+            stack.edgeInsets = NSEdgeInsets(top: 1, left: 4, bottom: 1, right: 4)
+            stack.wantsLayer = true
+            stack.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
+            stack.layer?.cornerRadius = 4
+            return stack
+        }
+
+        private func rebuildButtons(in stack: NSStackView, actions: HunkActions) {
+            stack.arrangedSubviews.forEach { view in
+                stack.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            if actions.showsStage {
+                stack.addArrangedSubview(makeButton(title: "暂存此块", action: #selector(stageClicked)))
+            }
+            if actions.showsUnstage {
+                stack.addArrangedSubview(makeButton(title: "取消暂存此块", action: #selector(unstageClicked)))
+            }
+            if actions.showsDiscard {
+                stack.addArrangedSubview(makeButton(title: "丢弃此块", action: #selector(discardClicked)))
+            }
+            for case let button as NSButton in stack.arrangedSubviews {
+                button.isEnabled = actions.isEnabled
+            }
+        }
+
+        private func makeButton(title: String, action: Selector) -> NSButton {
+            let button = NSButton(title: title, target: self, action: action)
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+            button.setButtonType(.momentaryPushIn)
+            return button
+        }
+    }
+}
+
+/// 叠在 scroll view 上：只拦截按钮点击，其余事件穿透给 NSTextView。
+private final class HunkOverlayView: NSView {
+    weak var coordinator: DiffTextView.Coordinator?
+
+    override var isFlipped: Bool { false }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        coordinator?.mouseMoved(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        coordinator?.mouseExited()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        for subview in subviews where !subview.isHidden && subview.frame.contains(local) {
+            if let hit = subview.hitTest(local) {
+                return hit
+            }
+        }
+        return nil
     }
 }

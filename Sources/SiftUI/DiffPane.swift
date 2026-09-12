@@ -5,6 +5,7 @@ import RepoStore
 
 struct DiffPane: View {
     @Environment(RepoStore.self) private var store
+    @State private var confirmsDelete = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,6 +18,15 @@ struct DiffPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Theme.contentBackground)
+        .confirmationDialog("删除未跟踪文件？", isPresented: $confirmsDelete, titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                if let file = store.selectedFile {
+                    Task { await store.deleteUntracked(file: file) }
+                }
+            }
+        } message: {
+            Text("\(store.selectedFile?.path ?? "")\n此操作无法从 git 恢复。")
+        }
         .task(id: store.diffEpoch) {
             await buildDocumentIfNeeded()
         }
@@ -43,7 +53,8 @@ struct DiffPane: View {
                                description: "\(oldMode) → \(newMode)")
             case .textual:
                 if let document = store.diffDocument {
-                    DiffTextView(document: document)
+                    DiffTextView(document: viewDocument(from: document),
+                                 hunkActions: hunkActions)
                 } else {
                     ProgressView().controlSize(.small)
                 }
@@ -57,25 +68,32 @@ struct DiffPane: View {
 
     @ViewBuilder
     private var headerTrailing: some View {
-        if let stats = selectedStats {
-            HStack(spacing: 6) {
-                Text(store.selectedFileIsStaged ? "已暂存" : "未暂存")
-                    .font(Theme.secondaryFont)
-                    .foregroundStyle(.secondary)
-                if stats.isBinary {
-                    Text("二进制")
+        HStack(spacing: 8) {
+            if store.selectedFile?.isUntracked == true {
+                Button("删除文件") { confirmsDelete = true }
+                    .controlSize(.small)
+                    .disabled(store.isMutating)
+            }
+            if let stats = selectedStats {
+                HStack(spacing: 6) {
+                    Text(store.selectedFileIsStaged ? "已暂存" : "未暂存")
                         .font(Theme.secondaryFont)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    if stats.added > 0 {
-                        Text("+\(stats.added)")
-                            .font(Theme.secondaryFont.monospacedDigit())
-                            .foregroundStyle(.green)
-                    }
-                    if stats.deleted > 0 {
-                        Text("−\(stats.deleted)")
-                            .font(Theme.secondaryFont.monospacedDigit())
-                            .foregroundStyle(.red)
+                        .foregroundStyle(.secondary)
+                    if stats.isBinary {
+                        Text("二进制")
+                            .font(Theme.secondaryFont)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        if stats.added > 0 {
+                            Text("+\(stats.added)")
+                                .font(Theme.secondaryFont.monospacedDigit())
+                                .foregroundStyle(.green)
+                        }
+                        if stats.deleted > 0 {
+                            Text("−\(stats.deleted)")
+                                .font(Theme.secondaryFont.monospacedDigit())
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
             }
@@ -97,6 +115,52 @@ struct DiffPane: View {
             : store.unstagedLineStats[path]
     }
 
+    private var hunkActions: HunkActions? {
+        guard let file = store.selectedFile, !file.isUntracked else { return nil }
+        let enabled = !store.isMutating
+        if store.selectedFileIsStaged {
+            return HunkActions(
+                showsStage: false,
+                showsUnstage: true,
+                showsDiscard: false,
+                isEnabled: enabled,
+                onStage: { _ in },
+                onUnstage: { id in performHunk(id) { await store.unstage(hunk: $0) } },
+                onDiscard: { _ in }
+            )
+        }
+        return HunkActions(
+            showsStage: true,
+            showsUnstage: false,
+            showsDiscard: true,
+            isEnabled: enabled,
+            onStage: { id in performHunk(id) { await store.stage(hunk: $0) } },
+            onUnstage: { _ in },
+            onDiscard: { id in performHunk(id) { await store.discard(hunk: $0) } }
+        )
+    }
+
+    private func performHunk(_ id: String, _ body: @escaping (Hunk) async -> Void) {
+        guard case .ready(let diff) = store.loadedDiff,
+              let hunk = diff.hunks.first(where: { $0.id == id }) else { return }
+        Task { await body(hunk) }
+    }
+
+    /// RepoStore 与 SiftUI 各持有一份 DiffDocument（避免模块循环），字段一一对应。
+    private func viewDocument(from stored: RepoStore.DiffDocument) -> DiffDocument {
+        DiffDocument(
+            text: stored.text,
+            hunkHeaders: stored.hunkHeaders.map { DiffHunkHeader(id: $0.id, range: $0.range) }
+        )
+    }
+
+    private func storeDocument(from built: DiffDocument) -> RepoStore.DiffDocument {
+        RepoStore.DiffDocument(
+            text: built.text,
+            hunkHeaders: built.hunkHeaders.map { RepoStore.DiffHunkHeader(id: $0.id, range: $0.range) }
+        )
+    }
+
     @MainActor
     private func buildDocumentIfNeeded() async {
         let epoch = store.diffEpoch
@@ -108,7 +172,7 @@ struct DiffPane: View {
         guard store.diffEpoch == epoch,
               store.selectedFile == file,
               store.selectedFileIsStaged == staged else { return }
-        store.updateDiffDocument(built, epoch: epoch)
+        store.updateDiffDocument(storeDocument(from: built), epoch: epoch)
     }
 }
 

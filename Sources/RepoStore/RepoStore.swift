@@ -16,6 +16,27 @@ public struct RepositoryEntry: Identifiable, Sendable {
 @MainActor
 @Observable
 public final class RepoStore {
+    /// 与 SiftUI.DiffDocument 同形。SiftUI 依赖本模块，不能反向 import，因此在此镜像一份供 store 持有。
+    public struct DiffHunkHeader: Sendable, Equatable {
+        public let id: String
+        public let range: NSRange
+
+        public init(id: String, range: NSRange) {
+            self.id = id
+            self.range = range
+        }
+    }
+
+    public struct DiffDocument: @unchecked Sendable {
+        public let text: NSAttributedString
+        public let hunkHeaders: [DiffHunkHeader]
+
+        public init(text: NSAttributedString, hunkHeaders: [DiffHunkHeader]) {
+            self.text = text
+            self.hunkHeaders = hunkHeaders
+        }
+    }
+
     public private(set) var repositories: [RepositoryEntry] = []
     public private(set) var selectedWorktree: Worktree?
     public private(set) var fileStatuses: [FileStatus] = []
@@ -26,8 +47,8 @@ public final class RepoStore {
     public private(set) var selectedFile: FileStatus?
     public private(set) var selectedFileIsStaged = false
     public private(set) var loadedDiff: LoadedDiff?
-    /// 已在后台构建好的 attributed string。DiffPane.body 只负责交给 DiffTextView。
-    public private(set) var diffDocument: NSAttributedString?
+    /// 已在后台构建好的 diff 文档。DiffPane.body 只负责交给 DiffTextView。
+    public private(set) var diffDocument: DiffDocument?
     /// DiffPane 用它触发后台构建；每次 `loadedDiff` 变化都递增。
     public private(set) var diffEpoch = 0
     public private(set) var isLoadingFileList = false
@@ -176,7 +197,7 @@ public final class RepoStore {
     }
 
     /// DiffPane 在后台构建完成后回写。epoch 对不上说明选择已经变了。
-    public func updateDiffDocument(_ document: NSAttributedString?, epoch: Int) {
+    public func updateDiffDocument(_ document: DiffDocument?, epoch: Int) {
         guard epoch == diffEpoch else { return }
         diffDocument = document
     }

@@ -18,7 +18,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
             DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 2, text: "fresh"),
         ])
         let document = DiffDocumentBuilder.build(diff)
-        let text = document.string
+        let text = document.text.string
         XCTAssertTrue(text.contains("keep"))
         XCTAssertTrue(text.contains("gone"))
         XCTAssertTrue(text.contains("fresh"))
@@ -28,7 +28,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
         let diff = makeDiff([
             DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
         ])
-        XCTAssertTrue(DiffDocumentBuilder.build(diff).string
+        XCTAssertTrue(DiffDocumentBuilder.build(diff).text.string
             .contains("func example()"))
     }
 
@@ -36,7 +36,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
         let diff = makeDiff([
             DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 1, text: "fresh"),
         ])
-        let document = DiffDocumentBuilder.build(diff)
+        let document = DiffDocumentBuilder.build(diff).text
         let range = (document.string as NSString).range(of: "fresh")
         let attributes = document.attributes(at: range.location, effectiveRange: nil)
         XCTAssertNotNil(attributes[.backgroundColor], "新增行必须有背景色")
@@ -46,7 +46,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
         let diff = makeDiff([
             DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
         ])
-        let document = DiffDocumentBuilder.build(diff)
+        let document = DiffDocumentBuilder.build(diff).text
         let font = document.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
         XCTAssertNotNil(font)
         XCTAssertTrue(font!.isFixedPitch, "代码必须用等宽字体")
@@ -56,14 +56,14 @@ final class DiffDocumentBuilderTests: XCTestCase {
         let diff = makeDiff([
             DiffLine(kind: .context, oldLineNumber: 42, newLineNumber: 43, text: "keep"),
         ], oldStart: 42, newStart: 43)
-        let text = DiffDocumentBuilder.build(diff).string
+        let text = DiffDocumentBuilder.build(diff).text.string
         XCTAssertTrue(text.contains("42"))
         XCTAssertTrue(text.contains("43"))
     }
 
     func testEmptyDiffProducesEmptyDocument() {
         let diff = FileDiff(path: "a.swift", originalPath: nil, content: .empty)
-        XCTAssertEqual(DiffDocumentBuilder.build(diff).length, 0)
+        XCTAssertEqual(DiffDocumentBuilder.build(diff).text.length, 0)
     }
 
     func testBuildOffMainActorMatchesBuild() async {
@@ -73,8 +73,20 @@ final class DiffDocumentBuilderTests: XCTestCase {
         ])
         let onThread = DiffDocumentBuilder.build(diff)
         let offMain = await DiffDocumentBuilder.buildOffMainActor(diff)
-        XCTAssertEqual(onThread.string, offMain.string)
-        XCTAssertEqual(onThread.length, offMain.length)
+        XCTAssertEqual(onThread.text.string, offMain.text.string)
+        XCTAssertEqual(onThread.text.length, offMain.text.length)
+    }
+
+    func testRecordsHunkHeaderRanges() {
+        let diff = makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
+        ])
+        let document = DiffDocumentBuilder.build(diff)
+        XCTAssertEqual(document.hunkHeaders.count, 1)
+        let header = document.hunkHeaders[0]
+        XCTAssertEqual(header.id, diff.hunks[0].id)
+        let headerText = (document.text.string as NSString).substring(with: header.range)
+        XCTAssertTrue(headerText.hasPrefix("@@"))
     }
 
     /// 性能护栏：大 diff 的文档构建必须够快，不然点开文件那 100ms 预算就爆了。

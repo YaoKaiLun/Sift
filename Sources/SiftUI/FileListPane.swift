@@ -18,7 +18,8 @@ struct FileListPane: View {
                        showsDivider: true,
                        leadingInset: showsSidebar ? 0 : trafficLightInset,
                        leading: {
-                // 槽宽必须等于行里的状态字母栏，标题才会和文件名同一条竖线。
+                // 槽宽必须等于行里的复选框+状态字母栏，标题才会和文件名同一条竖线。
+                Color.clear.frame(width: Theme.checkboxColumnWidth)
                 PlainIconButton(systemName: "sidebar.left", help: "显示或隐藏侧边栏") {
                     showsSidebar.toggle()
                 }
@@ -118,6 +119,7 @@ struct FileListPane: View {
 
     private func directoryRow(id: String, name: String, depth: Int, collapsed: Bool) -> some View {
         HStack(spacing: Theme.rowSpacing) {
+            Color.clear.frame(width: Theme.checkboxColumnWidth)
             Color.clear.frame(width: Theme.statusColumnWidth)
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .semibold))
@@ -150,23 +152,42 @@ struct FileListPane: View {
             && store.selectedFileIsStaged == staged
         let stats = staged ? store.stagedLineStats[status.path] : store.unstagedLineStats[status.path]
         return HStack(spacing: Theme.rowSpacing) {
-            StatusBadge(kind: staged ? status.indexStatus : status.worktreeStatus)
-                .frame(width: Theme.statusColumnWidth)
-            Text(showsDirectory ? status.path : status.fileName)
-                .font(Theme.pathFont)
-                .lineLimit(1)
-                .truncationMode(.head)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, CGFloat(depth) * Theme.indentWidth)
-            LineStatsBadge(stats: stats)
-                .frame(width: Theme.statsColumnWidth, alignment: .trailing)
+            Toggle("", isOn: Binding(
+                get: { staged },
+                set: { _ in
+                    Task {
+                        if staged {
+                            await store.unstage(file: status)
+                        } else {
+                            await store.stage(file: status)
+                        }
+                    }
+                }
+            ))
+            .toggleStyle(.checkbox)
+            .labelsHidden()
+            .frame(width: Theme.checkboxColumnWidth)
+            .disabled(store.isMutating)
+            HStack(spacing: Theme.rowSpacing) {
+                StatusBadge(kind: staged ? status.indexStatus : status.worktreeStatus)
+                    .frame(width: Theme.statusColumnWidth)
+                Text(showsDirectory ? status.path : status.fileName)
+                    .font(Theme.pathFont)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, CGFloat(depth) * Theme.indentWidth)
+                LineStatsBadge(stats: stats)
+                    .frame(width: Theme.statsColumnWidth, alignment: .trailing)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                Task { await store.select(file: status, staged: staged) }
+            }
         }
         .rowSurface(isSelected: selected, isHovered: hoveredRow == id)
         .pointerCursor()
         .onHover { hoveredRow = $0 ? id : nil }
-        .onTapGesture {
-            Task { await store.select(file: status, staged: staged) }
-        }
     }
 
 }
