@@ -32,8 +32,14 @@ public struct GitRunner: Sendable {
     }
 
     /// 执行 git，非零退出时抛错。
-    public func run(_ arguments: [String], in directory: URL) async throws -> Data {
-        let output = try await runAllowingFailure(arguments, in: directory)
+    public func run(
+        _ arguments: [String],
+        in directory: URL,
+        stdin: Data? = nil,
+        optionalLocks: Bool = true
+    ) async throws -> Data {
+        let output = try await runAllowingFailure(
+            arguments, in: directory, stdin: stdin, optionalLocks: optionalLocks)
         guard output.exitCode == 0 else {
             throw GitError.nonZeroExit(
                 command: arguments.joined(separator: " "),
@@ -44,10 +50,20 @@ public struct GitRunner: Sendable {
     }
 
     /// 执行 git，非零退出也正常返回，由调用方判断。
-    public func runAllowingFailure(_ arguments: [String], in directory: URL) async throws -> GitOutput {
+    public func runAllowingFailure(
+        _ arguments: [String],
+        in directory: URL,
+        stdin: Data? = nil,
+        optionalLocks: Bool = true
+    ) async throws -> GitOutput {
         let timeout = self.timeout
         let work = Task.detached(priority: .userInitiated) {
-            try await Self.execute(arguments: arguments, directory: directory, timeout: timeout)
+            try await Self.execute(
+                arguments: arguments,
+                directory: directory,
+                timeout: timeout,
+                stdin: stdin,
+                optionalLocks: optionalLocks)
         }
         return try await withTaskCancellationHandler {
             try await work.value
@@ -60,7 +76,9 @@ public struct GitRunner: Sendable {
     private static func execute(
         arguments: [String],
         directory: URL,
-        timeout: Duration
+        timeout: Duration,
+        stdin: Data?,
+        optionalLocks: Bool
     ) async throws -> GitOutput {
         try Task.checkCancellation()
 
@@ -69,17 +87,28 @@ public struct GitRunner: Sendable {
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = directory
-        // 禁止 git 弹凭证提示（否则子进程会永远挂着），并避免为只读操作抢 index 锁。
-        process.environment = ProcessInfo.processInfo.environment.merging([
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_OPTIONAL_LOCKS": "0",
-        ]) { _, new in new }
+        // 禁止 git 弹凭证提示（否则子进程会永远挂着）。
+        // 只读操作设置 GIT_OPTIONAL_LOCKS=0，避免抢 index 锁；写操作必须省略该变量。
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        if optionalLocks {
+            environment["GIT_OPTIONAL_LOCKS"] = "0"
+        }
+        process.environment = environment
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        process.standardInput = FileHandle.nullDevice
+        let stdinPipe: Pipe?
+        if stdin != nil {
+            let pipe = Pipe()
+            process.standardInput = pipe
+            stdinPipe = pipe
+        } else {
+            process.standardInput = FileHandle.nullDevice
+            stdinPipe = nil
+        }
 
         let stop = StopFlag()
 
@@ -90,9 +119,15 @@ public struct GitRunner: Sendable {
                 try? stderrPipe.fileHandleForWriting.close()
             }
 
-            // 先挂上 drain，再 `run()`，避免 git 瞬间写满管道而此时还没人读。
+            // 先挂上 drain 与 stdin 写入，再 `run()`。stdin 必须与 stdout/stderr 并发，
+            // 写完后关闭写端让 git 看到 EOF；否则大 patch 会堵满 64KB 管道。
             async let out = drain(stdoutPipe)
             async let err = drain(stderrPipe)
+            async let written: Void = {
+                guard let stdin, let stdinPipe else { return }
+                stdinPipe.fileHandleForWriting.write(stdin)
+                try? stdinPipe.fileHandleForWriting.close()
+            }()
 
             try await launch(box)
 
@@ -109,6 +144,7 @@ public struct GitRunner: Sendable {
             }
 
             let chunks = await (out, err)
+            await written
             await waitForExit(box)
             return chunks
         } onCancel: {

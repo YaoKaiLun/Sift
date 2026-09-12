@@ -115,4 +115,42 @@ final class GitRunnerTests: XCTestCase {
         let elapsed = ContinuousClock.now - started
         XCTAssertLessThan(elapsed, Duration.seconds(2), "取消后应在约 2 秒内返回")
     }
+
+    func testStdinIsHashedByGit() async throws {
+        let repo = try FixtureRepo()
+        let runner = GitRunner()
+        let data = try await runner.run(
+            ["hash-object", "--stdin"], in: repo.url,
+            stdin: Data("hello\n".utf8))
+        let hash = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(hash.count, 40)
+    }
+
+    func testStdinApplyStagesHunk() async throws {
+        let repo = try FixtureRepo()
+        try repo.write("line1\nline2\nline3\n", to: "a.txt")
+        try repo.commit("initial")
+        try repo.write("line1\nCHANGED\nline3\n", to: "a.txt")
+
+        let diffData = try await GitRunner().run(
+            ["diff", "--no-color", "-U3", "--", "a.txt"], in: repo.url)
+        let diff = DiffParser.parse(diffData, path: "a.txt")
+        let hunk = try XCTUnwrap(diff.hunks.first)
+        let patch = """
+        diff --git a/a.txt b/a.txt
+        --- a/a.txt
+        +++ b/a.txt
+        \(hunk.patchText)
+        """
+
+        try repo.git("checkout", "--", "a.txt")
+        _ = try await GitRunner().run(
+            ["apply", "--cached"], in: repo.url,
+            stdin: Data(patch.utf8), optionalLocks: false)
+
+        let staged = try await GitRunner().run(
+            ["diff", "--cached", "--name-only"], in: repo.url)
+        XCTAssertTrue(String(decoding: staged, as: UTF8.self).contains("a.txt"))
+    }
 }
