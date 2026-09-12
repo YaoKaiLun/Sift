@@ -25,6 +25,12 @@ struct DiffTextView: NSViewRepresentable {
     var hunkActions: HunkActions?
     var onSelectionChange: ((NSRange) -> Void)?
     var onExplain: ((String, String) -> Void)?
+    var onVisibleRangeChange: ((NSRange) -> Void)?
+    var preserveVisibleRect: Bool = false
+    var revealRange: NSRange? = nil
+    var onDidReveal: (() -> Void)?
+    var onExpandCollapsedFile: ((String) -> Void)?
+    var hunkIsStaged: ((String) -> Bool?)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -36,7 +42,13 @@ struct DiffTextView: NSViewRepresentable {
                                     document: document,
                                     hunkActions: hunkActions,
                                     onSelectionChange: onSelectionChange,
-                                    onExplain: onExplain)
+                                    onExplain: onExplain,
+                                    onVisibleRangeChange: onVisibleRangeChange,
+                                    preserveVisibleRect: preserveVisibleRect,
+                                    revealRange: revealRange,
+                                    onDidReveal: onDidReveal,
+                                    onExpandCollapsedFile: onExpandCollapsedFile,
+                                    hunkIsStaged: hunkIsStaged)
         return container
     }
 
@@ -45,7 +57,13 @@ struct DiffTextView: NSViewRepresentable {
                                     document: document,
                                     hunkActions: hunkActions,
                                     onSelectionChange: onSelectionChange,
-                                    onExplain: onExplain)
+                                    onExplain: onExplain,
+                                    onVisibleRangeChange: onVisibleRangeChange,
+                                    preserveVisibleRect: preserveVisibleRect,
+                                    revealRange: revealRange,
+                                    onDidReveal: onDidReveal,
+                                    onExpandCollapsedFile: onExpandCollapsedFile,
+                                    hunkIsStaged: hunkIsStaged)
     }
 
     @MainActor
@@ -54,6 +72,12 @@ struct DiffTextView: NSViewRepresentable {
         var hunkActions: HunkActions?
         var onSelectionChange: ((NSRange) -> Void)?
         var onExplain: ((String, String) -> Void)?
+        var onVisibleRangeChange: ((NSRange) -> Void)?
+        var preserveVisibleRect = false
+        var revealRange: NSRange?
+        var onDidReveal: (() -> Void)?
+        var onExpandCollapsedFile: ((String) -> Void)?
+        var hunkIsStaged: ((String) -> Bool?)?
         private weak var container: NSView?
         private weak var scrollView: NSScrollView?
         private weak var textView: NSTextView?
@@ -64,15 +88,18 @@ struct DiffTextView: NSViewRepresentable {
         private var explainButton: NSButton?
         private weak var selectionTextView: NSTextView?
         private var hoveredID: String?
+        private var hoveredCollapsedID: String?
         private var lastButtonIdentity: ButtonIdentity?
         private var isSplit = false
         private var isSyncing = false
+        private var lastRevealedRange: NSRange?
 
         private struct ButtonIdentity: Equatable {
             var hoveredID: String
             var showsStage: Bool
             var showsUnstage: Bool
             var showsDiscard: Bool
+            var showsExpandCollapsed: Bool
             var isEnabled: Bool
         }
 
@@ -80,24 +107,54 @@ struct DiffTextView: NSViewRepresentable {
                      document: DiffDocument,
                      hunkActions: HunkActions?,
                      onSelectionChange: ((NSRange) -> Void)?,
-                     onExplain: ((String, String) -> Void)?) {
+                     onExplain: ((String, String) -> Void)?,
+                     onVisibleRangeChange: ((NSRange) -> Void)?,
+                     preserveVisibleRect: Bool,
+                     revealRange: NSRange?,
+                     onDidReveal: (() -> Void)?,
+                     onExpandCollapsedFile: ((String) -> Void)?,
+                     hunkIsStaged: ((String) -> Bool?)?) {
             self.container = container
             self.document = document
             self.hunkActions = hunkActions
             self.onSelectionChange = onSelectionChange
             self.onExplain = onExplain
+            self.onVisibleRangeChange = onVisibleRangeChange
+            self.preserveVisibleRect = preserveVisibleRect
+            self.revealRange = revealRange
+            self.onDidReveal = onDidReveal
+            self.onExpandCollapsedFile = onExpandCollapsedFile
+            self.hunkIsStaged = hunkIsStaged
             let wantSplit = document.splitRight != nil
             if container.subviews.isEmpty || wantSplit != isSplit {
                 rebuildHierarchy(split: wantSplit)
             }
+            let origin = scrollView?.documentVisibleRect.origin
             if let textView {
-                replaceText(in: textView, with: document.text)
+                replaceText(in: textView, with: document.text, preserveVisibleRect: preserveVisibleRect)
             }
             if let rightTextView, let right = document.splitRight {
-                replaceText(in: rightTextView, with: right)
+                replaceText(in: rightTextView, with: right, preserveVisibleRect: preserveVisibleRect)
+            }
+            if let revealRange {
+                if revealRange != lastRevealedRange, let textView {
+                    textView.scrollRangeToVisible(revealRange)
+                    lastRevealedRange = revealRange
+                    onDidReveal?()
+                }
+            } else {
+                lastRevealedRange = nil
+                if preserveVisibleRect, let origin, let scrollView {
+                    scrollView.contentView.scroll(to: origin)
+                    scrollView.reflectScrolledClipView(scrollView.contentView)
+                }
             }
             relayoutOverlay()
             updateExplainButton()
+            reportVisibleRange()
+            DispatchQueue.main.async { [weak self] in
+                self?.reportVisibleRange()
+            }
         }
 
         private func rebuildHierarchy(split: Bool) {
@@ -108,6 +165,7 @@ struct DiffTextView: NSViewRepresentable {
             explainButton = nil
             selectionTextView = nil
             hoveredID = nil
+            hoveredCollapsedID = nil
             lastButtonIdentity = nil
             scrollView = nil
             textView = nil
@@ -210,7 +268,9 @@ struct DiffTextView: NSViewRepresentable {
             )
         }
 
-        private func replaceText(in textView: NSTextView, with text: NSAttributedString) {
+        private func replaceText(in textView: NSTextView,
+                                 with text: NSAttributedString,
+                                 preserveVisibleRect: Bool) {
             guard let storage = textView.textStorage else { return }
             if storage.string == text.string {
                 if !storage.isEqual(to: text) {
@@ -225,7 +285,9 @@ struct DiffTextView: NSViewRepresentable {
                 storage.beginEditing()
                 storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: text)
                 storage.endEditing()
-                textView.scroll(NSPoint(x: 0, y: 0))
+                if !preserveVisibleRect {
+                    textView.scroll(NSPoint(x: 0, y: 0))
+                }
             }
         }
 
@@ -234,6 +296,24 @@ struct DiffTextView: NSViewRepresentable {
                 syncVerticalScroll(from: notification)
             }
             relayoutOverlay()
+            reportVisibleRange()
+        }
+
+        private func reportVisibleRange() {
+            guard let onVisibleRangeChange,
+                  let textView,
+                  let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer,
+                  let scrollView else { return }
+            let visible = textView.convert(scrollView.documentVisibleRect, from: scrollView)
+            var rect = visible
+            rect.origin.x -= textView.textContainerOrigin.x
+            rect.origin.y -= textView.textContainerOrigin.y
+            let glyphRange = layoutManager.glyphRange(
+                forBoundingRectWithoutAdditionalLayout: rect, in: textContainer)
+            let charRange = layoutManager.characterRange(
+                forGlyphRange: glyphRange, actualGlyphRange: nil)
+            onVisibleRangeChange(charRange)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -274,38 +354,64 @@ struct DiffTextView: NSViewRepresentable {
 
         func mouseExited() {
             hoveredID = nil
+            hoveredCollapsedID = nil
             hideButtonStack()
         }
 
         @objc func relayoutOverlay() {
             overlay?.frame = scrollView?.bounds ?? .zero
             updateExplainButton()
-            guard let hoveredID, hunkActions != nil else {
+            if let hoveredCollapsedID,
+               let header = document.fileHeaders.first(where: { $0.id == hoveredCollapsedID && $0.isCollapsed }),
+               let headerRect = headerRectInScroll(for: header.range) {
+                if mouseStillHits(headerRect) {
+                    showCollapsedButton(headerRect: headerRect)
+                    return
+                }
+                self.hoveredCollapsedID = nil
+            }
+            guard let hoveredID else {
+                hideButtonStack()
+                return
+            }
+            guard hunkActions != nil || hunkIsStaged != nil else {
                 hideButtonStack()
                 return
             }
             guard let header = document.hunkHeaders.first(where: { $0.id == hoveredID }),
-                  let headerRect = headerRectInScroll(for: header) else {
+                  let headerRect = headerRectInScroll(for: header.range) else {
                 hideButtonStack()
                 return
             }
-            if let overlay, let scrollView, let window = overlay.window {
-                let pointInOverlay = overlay.convert(
-                    window.mouseLocationOutsideOfEventStream, from: nil)
-                let pointInScroll = overlay.convert(pointInOverlay, to: scrollView)
-                if !headerHitRect(for: headerRect).contains(pointInScroll) {
-                    self.hoveredID = nil
-                    hideButtonStack()
-                    return
-                }
+            if !mouseStillHits(headerRect) {
+                self.hoveredID = nil
+                hideButtonStack()
+                return
             }
             showButtons(headerRect: headerRect)
+        }
+
+        private func mouseStillHits(_ headerRect: NSRect) -> Bool {
+            guard let overlay, let scrollView, let window = overlay.window else { return true }
+            let pointInOverlay = overlay.convert(
+                window.mouseLocationOutsideOfEventStream, from: nil)
+            let pointInScroll = overlay.convert(pointInOverlay, to: scrollView)
+            return headerHitRect(for: headerRect).contains(pointInScroll)
         }
 
         private func applyHover(at pointInOverlay: NSPoint) {
             guard let overlay, let scrollView else { return }
             let pointInScroll = overlay.convert(pointInOverlay, to: scrollView)
+            if let collapsedID = collapsedFileID(at: pointInScroll),
+               let header = document.fileHeaders.first(where: { $0.id == collapsedID }),
+               let headerRect = headerRectInScroll(for: header.range) {
+                hoveredID = nil
+                hoveredCollapsedID = collapsedID
+                showCollapsedButton(headerRect: headerRect)
+                return
+            }
             let hitID = hunkID(at: pointInScroll)
+            hoveredCollapsedID = nil
             if hitID == nil {
                 hoveredID = nil
                 hideButtonStack()
@@ -313,7 +419,7 @@ struct DiffTextView: NSViewRepresentable {
             }
             hoveredID = hitID
             guard let header = document.hunkHeaders.first(where: { $0.id == hitID }),
-                  let headerRect = headerRectInScroll(for: header) else {
+                  let headerRect = headerRectInScroll(for: header.range) else {
                 hideButtonStack()
                 return
             }
@@ -339,6 +445,27 @@ struct DiffTextView: NSViewRepresentable {
             hunkActions?.onDiscard(hoveredID)
         }
 
+        @objc func expandCollapsedClicked() {
+            guard let hoveredCollapsedID else { return }
+            onExpandCollapsedFile?(hoveredCollapsedID)
+        }
+
+        private func collapsedFileID(at pointInScroll: NSPoint) -> String? {
+            if let buttonStack, !buttonStack.isHidden,
+               let overlay,
+               buttonStack.frame.contains(overlay.convert(pointInScroll, from: scrollView)),
+               hoveredCollapsedID != nil {
+                return hoveredCollapsedID
+            }
+            for header in document.fileHeaders where header.isCollapsed {
+                guard let rect = headerRectInScroll(for: header.range) else { continue }
+                if headerHitRect(for: rect).contains(pointInScroll) {
+                    return header.id
+                }
+            }
+            return nil
+        }
+
         private func hunkID(at pointInScroll: NSPoint) -> String? {
             if let buttonStack, !buttonStack.isHidden,
                let overlay,
@@ -346,7 +473,7 @@ struct DiffTextView: NSViewRepresentable {
                 return hoveredID
             }
             for header in document.hunkHeaders {
-                guard let rect = headerRectInScroll(for: header) else { continue }
+                guard let rect = headerRectInScroll(for: header.range) else { continue }
                 if headerHitRect(for: rect).contains(pointInScroll) {
                     return header.id
                 }
@@ -362,21 +489,61 @@ struct DiffTextView: NSViewRepresentable {
                 height: max(headerRect.height, Theme.codeLineHeight))
         }
 
-        private func headerRectInScroll(for header: DiffHunkHeader) -> NSRect? {
+        private func headerRectInScroll(for range: NSRange) -> NSRect? {
             guard let textView,
                   let scrollView,
                   let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer else { return nil }
             let glyphRange = layoutManager.glyphRange(
-                forCharacterRange: header.range, actualCharacterRange: nil)
+                forCharacterRange: range, actualCharacterRange: nil)
             var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
             rect.origin.x += textView.textContainerOrigin.x
             rect.origin.y += textView.textContainerOrigin.y
             return textView.convert(rect, to: scrollView)
         }
 
+        private func resolvedHunkFlags(for id: String, actions: HunkActions) -> (stage: Bool, unstage: Bool, discard: Bool) {
+            if let hunkIsStaged {
+                switch hunkIsStaged(id) {
+                case true: return (false, true, false)
+                case false: return (true, false, true)
+                case nil: return (false, false, false)
+                }
+            }
+            return (actions.showsStage, actions.showsUnstage, actions.showsDiscard)
+        }
+
+        private func showCollapsedButton(headerRect: NSRect) {
+            guard let overlay, let scrollView, let hoveredCollapsedID else { return }
+            let stack = buttonStack ?? makeButtonStack()
+            if buttonStack == nil {
+                overlay.addSubview(stack)
+                buttonStack = stack
+            }
+            let identity = ButtonIdentity(
+                hoveredID: hoveredCollapsedID,
+                showsStage: false,
+                showsUnstage: false,
+                showsDiscard: false,
+                showsExpandCollapsed: true,
+                isEnabled: true)
+            if lastButtonIdentity != identity {
+                rebuildCollapsedButton(in: stack)
+                lastButtonIdentity = identity
+            }
+            place(stack, at: headerRect, in: scrollView)
+        }
+
         private func showButtons(headerRect: NSRect) {
-            guard let overlay, let actions = hunkActions, let scrollView, let hoveredID else { return }
+            guard let overlay, let scrollView, let hoveredID else { return }
+            let actions = hunkActions ?? HunkActions(
+                showsStage: false, showsUnstage: false, showsDiscard: false, isEnabled: false,
+                onStage: { _ in }, onUnstage: { _ in }, onDiscard: { _ in })
+            let flags = resolvedHunkFlags(for: hoveredID, actions: actions)
+            guard flags.stage || flags.unstage || flags.discard else {
+                hideButtonStack()
+                return
+            }
             let stack = buttonStack ?? makeButtonStack()
             if buttonStack == nil {
                 overlay.addSubview(stack)
@@ -384,14 +551,27 @@ struct DiffTextView: NSViewRepresentable {
             }
             let identity = ButtonIdentity(
                 hoveredID: hoveredID,
-                showsStage: actions.showsStage,
-                showsUnstage: actions.showsUnstage,
-                showsDiscard: actions.showsDiscard,
+                showsStage: flags.stage,
+                showsUnstage: flags.unstage,
+                showsDiscard: flags.discard,
+                showsExpandCollapsed: false,
                 isEnabled: actions.isEnabled)
             if lastButtonIdentity != identity {
-                rebuildButtons(in: stack, actions: actions)
+                let adjusted = HunkActions(
+                    showsStage: flags.stage,
+                    showsUnstage: flags.unstage,
+                    showsDiscard: flags.discard,
+                    isEnabled: actions.isEnabled,
+                    onStage: actions.onStage,
+                    onUnstage: actions.onUnstage,
+                    onDiscard: actions.onDiscard)
+                rebuildButtons(in: stack, actions: adjusted)
                 lastButtonIdentity = identity
             }
+            place(stack, at: headerRect, in: scrollView)
+        }
+
+        private func place(_ stack: NSStackView, at headerRect: NSRect, in scrollView: NSScrollView) {
             stack.isHidden = false
             stack.layoutSubtreeIfNeeded()
             let size = stack.fittingSize
@@ -410,6 +590,14 @@ struct DiffTextView: NSViewRepresentable {
             stack.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
             stack.layer?.cornerRadius = 4
             return stack
+        }
+
+        private func rebuildCollapsedButton(in stack: NSStackView) {
+            stack.arrangedSubviews.forEach { view in
+                stack.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            stack.addArrangedSubview(makeButton(title: "仍要查看", action: #selector(expandCollapsedClicked)))
         }
 
         private func rebuildButtons(in stack: NSStackView, actions: HunkActions) {

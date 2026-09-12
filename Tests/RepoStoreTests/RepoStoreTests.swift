@@ -129,4 +129,77 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertTrue(updated.hasStagedChanges)
         XCTAssertFalse(updated.hasUnstagedChanges)
     }
+
+    func testContinuousPlanDoesNotLoadDiffs() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("a\n", to: "a.txt", in: url)
+        try write("b\n", to: "b.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("a\nA\n", to: "a.txt", in: url)
+        try write("b\nB\n", to: "b.txt", in: url)
+
+        let store = makeStore()
+        store.usesContinuousDiff = true
+        await store.addRepository(at: url)
+
+        XCTAssertEqual(store.continuousPlan.count, 2)
+        XCTAssertTrue(store.continuousLoaded.isEmpty, "视口未报告前不得 load diff")
+        XCTAssertNil(store.loadedDiff)
+    }
+
+    func testContinuousSelectScrollsInsteadOfLoading() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("a\n", to: "a.txt", in: url)
+        try write("b\n", to: "b.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("a\nA\n", to: "a.txt", in: url)
+        try write("b\nB\n", to: "b.txt", in: url)
+
+        let store = makeStore()
+        store.usesContinuousDiff = true
+        await store.addRepository(at: url)
+        let file = try XCTUnwrap(store.fileStatuses.first { $0.path == "b.txt" })
+        await store.select(file: file, staged: false)
+
+        XCTAssertEqual(store.selectedFile?.path, "b.txt")
+        XCTAssertEqual(store.continuousRevealID, "u:b.txt")
+        XCTAssertTrue(store.continuousLoaded.isEmpty)
+        XCTAssertNil(store.loadedDiff)
+    }
+
+    func testContinuousVisibleRangeLoadsOnlyIntersectingFiles() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("a\n", to: "a.txt", in: url)
+        try write("b\n", to: "b.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("a\nA\n", to: "a.txt", in: url)
+        try write("b\nB\n", to: "b.txt", in: url)
+
+        let store = makeStore()
+        store.usesContinuousDiff = true
+        await store.addRepository(at: url)
+        XCTAssertEqual(store.continuousPlan.count, 2)
+
+        let first = try XCTUnwrap(store.continuousPlan.first)
+        let second = try XCTUnwrap(store.continuousPlan.dropFirst().first)
+        store.loadContinuousEntries(
+            visibleRange: NSRange(location: 0, length: 10),
+            fileRanges: [
+                first.id: NSRange(location: 0, length: 10),
+                second.id: NSRange(location: 50, length: 10),
+            ])
+
+        let deadline = Date().addingTimeInterval(2)
+        while store.continuousLoaded.isEmpty, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(Array(store.continuousLoaded.keys), [first.id],
+                       "视口外的文件不得调用 git diff")
+    }
 }

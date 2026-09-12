@@ -30,13 +30,44 @@ struct DiffPane: View {
         } message: {
             Text("\(store.selectedFile?.path ?? "")\n此操作无法从 git 恢复。")
         }
-        .task(id: "\(store.diffEpoch)-\(store.usesSplitDiff)") {
-            await buildDocumentIfNeeded()
+        .task(id: store.usesContinuousDiff) {
+            await store.handleBrowseModeChange()
+        }
+        .task(id: "\(store.diffEpoch)-\(store.usesSplitDiff)-\(store.usesContinuousDiff)") {
+            if store.usesContinuousDiff {
+                await buildContinuousDocumentIfNeeded()
+            } else {
+                await buildDocumentIfNeeded()
+            }
         }
     }
 
     @ViewBuilder
     private var content: some View {
+        if store.usesContinuousDiff {
+            continuousContent
+        } else {
+            singleFileContent
+        }
+    }
+
+    @ViewBuilder
+    private var continuousContent: some View {
+        if store.selectedWorktree == nil {
+            PaneEmptyState(title: "选择一个文件", systemImage: "doc.text")
+        } else if store.fileStatuses.isEmpty && !store.isLoadingFileList {
+            PaneEmptyState(title: "没有改动", systemImage: "checkmark.circle")
+        } else if let document = store.diffDocument {
+            diffStack(document: document)
+        } else if !store.continuousPlan.isEmpty || store.isLoadingFileList {
+            ProgressView().controlSize(.small)
+        } else {
+            PaneEmptyState(title: "没有改动", systemImage: "checkmark.circle")
+        }
+    }
+
+    @ViewBuilder
+    private var singleFileContent: some View {
         switch store.loadedDiff {
         case .none:
             if store.selectedFile == nil {
@@ -56,24 +87,7 @@ struct DiffPane: View {
                                description: "\(oldMode) → \(newMode)")
             case .textual:
                 if let document = store.diffDocument {
-                    HStack(spacing: 0) {
-                        DiffTextView(document: viewDocument(from: document),
-                                     hunkActions: hunkActions,
-                                     onSelectionChange: { store.updateExplainSelection($0) },
-                                     onExplain: { selected, surrounding in
-                                         store.startExplain(selectedText: selected,
-                                                            surroundingText: surrounding)
-                                     })
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        if store.showsExplainPanel {
-                            Divider()
-                            ExplainPanel()
-                                .frame(width: 320)
-                                .transition(reduceMotion ? .identity : .move(edge: .trailing))
-                        }
-                    }
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
-                               value: store.showsExplainPanel)
+                    diffStack(document: document)
                 } else {
                     ProgressView().controlSize(.small)
                 }
@@ -83,6 +97,45 @@ struct DiffPane: View {
                 Task { await store.expandCollapsedDiff() }
             }
         }
+    }
+
+    private func diffStack(document: RepoStore.DiffDocument) -> some View {
+        HStack(spacing: 0) {
+            DiffTextView(document: viewDocument(from: document),
+                         hunkActions: hunkActions,
+                         onSelectionChange: { store.updateExplainSelection($0) },
+                         onExplain: { selected, surrounding in
+                             store.startExplain(selectedText: selected,
+                                                surroundingText: surrounding)
+                         },
+                         onVisibleRangeChange: store.usesContinuousDiff ? { range in
+                             let fileRanges = Dictionary(uniqueKeysWithValues:
+                                document.fileHeaders.map { ($0.id, $0.range) })
+                             store.loadContinuousEntries(visibleRange: range, fileRanges: fileRanges)
+                         } : nil,
+                         preserveVisibleRect: store.usesContinuousDiff && store.continuousPreservesScroll,
+                         revealRange: revealRange(in: document),
+                         onDidReveal: { store.consumeContinuousReveal() },
+                         onExpandCollapsedFile: { id in
+                             store.expandContinuousCollapsed(id: id)
+                         },
+                         hunkIsStaged: store.usesContinuousDiff ? { store.hunkIsStaged($0) } : nil)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if store.showsExplainPanel {
+                Divider()
+                ExplainPanel()
+                    .frame(width: 320)
+                    .transition(reduceMotion ? .identity : .move(edge: .trailing))
+            }
+        }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18),
+                   value: store.showsExplainPanel)
+    }
+
+    private func revealRange(in document: RepoStore.DiffDocument) -> NSRange? {
+        guard let id = store.continuousRevealID,
+              let header = document.fileHeaders.first(where: { $0.id == id }) else { return nil }
+        return header.range
     }
 
     @ViewBuilder
@@ -148,8 +201,25 @@ struct DiffPane: View {
     }
 
     private var hunkActions: HunkActions? {
-        guard let file = store.selectedFile, !file.isUntracked else { return nil }
         let enabled = !store.isMutating
+        if store.usesContinuousDiff {
+            return HunkActions(
+                showsStage: true,
+                showsUnstage: true,
+                showsDiscard: true,
+                isEnabled: enabled,
+                onStage: { id in performHunk(id) { hunk, file, staged in
+                    await store.stage(hunk: hunk, file: file, stagedSide: staged)
+                } },
+                onUnstage: { id in performHunk(id) { hunk, file, staged in
+                    await store.unstage(hunk: hunk, file: file, stagedSide: staged)
+                } },
+                onDiscard: { id in performHunk(id) { hunk, file, staged in
+                    await store.discard(hunk: hunk, file: file, stagedSide: staged)
+                } }
+            )
+        }
+        guard let file = store.selectedFile, !file.isUntracked else { return nil }
         if store.selectedFileIsStaged {
             return HunkActions(
                 showsStage: false,
@@ -157,7 +227,9 @@ struct DiffPane: View {
                 showsDiscard: false,
                 isEnabled: enabled,
                 onStage: { _ in },
-                onUnstage: { id in performHunk(id) { await store.unstage(hunk: $0) } },
+                onUnstage: { id in performHunk(id) { hunk, file, staged in
+                    await store.unstage(hunk: hunk, file: file, stagedSide: staged)
+                } },
                 onDiscard: { _ in }
             )
         }
@@ -166,16 +238,21 @@ struct DiffPane: View {
             showsUnstage: false,
             showsDiscard: true,
             isEnabled: enabled,
-            onStage: { id in performHunk(id) { await store.stage(hunk: $0) } },
+            onStage: { id in performHunk(id) { hunk, file, staged in
+                await store.stage(hunk: hunk, file: file, stagedSide: staged)
+            } },
             onUnstage: { _ in },
-            onDiscard: { id in performHunk(id) { await store.discard(hunk: $0) } }
+            onDiscard: { id in performHunk(id) { hunk, file, staged in
+                await store.discard(hunk: hunk, file: file, stagedSide: staged)
+            } }
         )
     }
 
-    private func performHunk(_ id: String, _ body: @escaping (Hunk) async -> Void) {
-        guard case .ready(let diff) = store.loadedDiff,
-              let hunk = diff.hunks.first(where: { $0.id == id }) else { return }
-        Task { await body(hunk) }
+    private func performHunk(_ id: String,
+                             _ body: @escaping (Hunk, FileStatus, Bool) async -> Void) {
+        guard let hunk = store.hunk(matching: id),
+              let fileInfo = store.fileForHunk(id: id) else { return }
+        Task { await body(hunk, fileInfo.file, fileInfo.staged) }
     }
 
     /// RepoStore 与 SiftUI 各持有一份 DiffDocument（避免模块循环），字段一一对应。
@@ -183,7 +260,11 @@ struct DiffPane: View {
         DiffDocument(
             text: stored.text,
             splitRight: stored.splitRight,
-            hunkHeaders: stored.hunkHeaders.map { DiffHunkHeader(id: $0.id, range: $0.range) }
+            hunkHeaders: stored.hunkHeaders.map { DiffHunkHeader(id: $0.id, range: $0.range) },
+            fileHeaders: stored.fileHeaders.map {
+                DiffFileHeader(id: $0.id, range: $0.range,
+                               isPlaceholder: $0.isPlaceholder, isCollapsed: $0.isCollapsed)
+            }
         )
     }
 
@@ -191,7 +272,11 @@ struct DiffPane: View {
         RepoStore.DiffDocument(
             text: built.text,
             splitRight: built.splitRight,
-            hunkHeaders: built.hunkHeaders.map { RepoStore.DiffHunkHeader(id: $0.id, range: $0.range) }
+            hunkHeaders: built.hunkHeaders.map { RepoStore.DiffHunkHeader(id: $0.id, range: $0.range) },
+            fileHeaders: built.fileHeaders.map {
+                RepoStore.DiffFileHeader(id: $0.id, range: $0.range,
+                                         isPlaceholder: $0.isPlaceholder, isCollapsed: $0.isCollapsed)
+            }
         )
     }
 
@@ -217,7 +302,8 @@ struct DiffPane: View {
             let right = built.splitRight.map {
                 DiffSyntaxHighlight.paint($0, path: path, highlighter: highlighter)
             }
-            return DiffDocument(text: left, splitRight: right, hunkHeaders: built.hunkHeaders)
+            return DiffDocument(text: left, splitRight: right, hunkHeaders: built.hunkHeaders,
+                                fileHeaders: built.fileHeaders)
         }
         let highlighted = await withTaskCancellationHandler {
             await highlightTask.value
@@ -228,6 +314,32 @@ struct DiffPane: View {
               store.diffEpoch == epoch,
               store.selectedFile == file,
               store.selectedFileIsStaged == staged else { return }
+        store.updateDiffDocument(storeDocument(from: highlighted), epoch: epoch)
+    }
+
+    @MainActor
+    private func buildContinuousDocumentIfNeeded() async {
+        let epoch = store.diffEpoch
+        let layout: DiffLayout = store.usesSplitDiff ? .split : .unified
+        let plan = store.continuousPlan
+        let loaded = store.continuousLoaded
+        let sections = plan.map { entry in (entry, loaded[entry.id]) }
+        let built = await DiffDocumentBuilder.buildContinuousOffMainActor(
+            sections: sections, layout: layout)
+        guard store.diffEpoch == epoch, store.usesContinuousDiff else { return }
+        store.updateDiffDocument(storeDocument(from: built), epoch: epoch)
+
+        let highlightTask = Task.detached(priority: .userInitiated) {
+            DiffSyntaxHighlight.paintContinuous(built, sections: sections)
+        }
+        let highlighted = await withTaskCancellationHandler {
+            await highlightTask.value
+        } onCancel: {
+            highlightTask.cancel()
+        }
+        guard !Task.isCancelled,
+              store.diffEpoch == epoch,
+              store.usesContinuousDiff else { return }
         store.updateDiffDocument(storeDocument(from: highlighted), epoch: epoch)
     }
 }
@@ -246,12 +358,24 @@ private enum DiffSyntaxHighlight {
 
     static func paint(_ text: NSAttributedString,
                       path: String,
-                      highlighter: Highlighter) -> NSAttributedString {
+                      highlighter: Highlighter,
+                      in limit: NSRange? = nil) -> NSAttributedString {
         guard !Task.isCancelled else { return text }
         let result = NSMutableAttributedString(attributedString: text)
-        let ns = text.string as NSString
-        let full = NSRange(location: 0, length: text.length)
-        text.enumerateAttribute(.siftRole, in: full) { value, range, stop in
+        paint(result, path: path, highlighter: highlighter, in: limit)
+        return result
+    }
+
+    static func paint(_ result: NSMutableAttributedString,
+                      path: String,
+                      highlighter: Highlighter,
+                      in limit: NSRange?) {
+        guard !Task.isCancelled else { return }
+        let ns = result.string as NSString
+        let full = NSRange(location: 0, length: result.length)
+        let scope = limit.map { NSIntersectionRange($0, full) } ?? full
+        guard scope.length > 0 else { return }
+        result.enumerateAttribute(.siftRole, in: scope) { value, range, stop in
             if Task.isCancelled {
                 stop.pointee = true
                 return
@@ -267,7 +391,34 @@ private enum DiffSyntaxHighlight {
                 result.addAttribute(.foregroundColor, value: color(for: span.kind), range: painted)
             }
         }
-        return result
+    }
+
+    static func paintContinuous(
+        _ document: DiffDocument,
+        sections: [(ContinuousDiffEntry, LoadedDiff?)]
+    ) -> DiffDocument {
+        guard !Task.isCancelled else { return document }
+        let highlighter = Highlighter()
+        let left = NSMutableAttributedString(attributedString: document.text)
+        let right = document.splitRight.map { NSMutableAttributedString(attributedString: $0) }
+        for (index, header) in document.fileHeaders.enumerated() {
+            if Task.isCancelled { return document }
+            let path = sections.first(where: { $0.0.id == header.id })?.0.status.path ?? ""
+            let start = header.range.location
+            let end = index + 1 < document.fileHeaders.count
+                ? document.fileHeaders[index + 1].range.location
+                : left.length
+            let scope = NSRange(location: start, length: max(0, end - start))
+            paint(left, path: path, highlighter: highlighter, in: scope)
+            if let right {
+                paint(right, path: path, highlighter: highlighter, in: scope)
+            }
+        }
+        return DiffDocument(
+            text: left,
+            splitRight: right,
+            hunkHeaders: document.hunkHeaders,
+            fileHeaders: document.fileHeaders)
     }
 }
 

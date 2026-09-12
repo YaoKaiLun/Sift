@@ -1,5 +1,6 @@
 import AppKit
 import GitKit
+import DiffEngine
 
 public struct DiffHunkHeader: Sendable, Equatable {
     public let id: String
@@ -20,20 +21,37 @@ extension NSAttributedString.Key {
     public static let siftRole = NSAttributedString.Key("siftRole")
 }
 
+public struct DiffFileHeader: Sendable, Equatable {
+    public let id: String
+    public let range: NSRange
+    public let isPlaceholder: Bool
+    public let isCollapsed: Bool
+
+    public init(id: String, range: NSRange, isPlaceholder: Bool, isCollapsed: Bool) {
+        self.id = id
+        self.range = range
+        self.isPlaceholder = isPlaceholder
+        self.isCollapsed = isCollapsed
+    }
+}
+
 public struct DiffDocument: @unchecked Sendable {
     public let text: NSAttributedString
     public let splitRight: NSAttributedString?
     public let hunkHeaders: [DiffHunkHeader]
+    public let fileHeaders: [DiffFileHeader]
 
     /// 分栏左栏；统一视图下就是全文。与 `text` 同一份文档。
     public var splitLeft: NSAttributedString { text }
 
     public init(text: NSAttributedString,
                 splitRight: NSAttributedString? = nil,
-                hunkHeaders: [DiffHunkHeader] = []) {
+                hunkHeaders: [DiffHunkHeader] = [],
+                fileHeaders: [DiffFileHeader] = []) {
         self.text = text
         self.splitRight = splitRight
         self.hunkHeaders = hunkHeaders
+        self.fileHeaders = fileHeaders
     }
 }
 
@@ -112,7 +130,9 @@ public enum DiffDocumentBuilder {
         return NSRange(location: start, length: end - start)
     }
 
-    public static func build(_ diff: FileDiff, layout: DiffLayout = .unified) -> DiffDocument {
+    public static func build(_ diff: FileDiff,
+                             layout: DiffLayout = .unified,
+                             hunkIDPrefix: String = "") -> DiffDocument {
         guard case .textual(let hunks) = diff.content, !hunks.isEmpty else {
             return DiffDocument(text: NSAttributedString(), hunkHeaders: [])
         }
@@ -129,10 +149,57 @@ public enum DiffDocumentBuilder {
 
         switch layout {
         case .unified:
-            return buildUnified(hunks: hunks, paragraph: paragraph, font: font, colors: colors)
+            return buildUnified(hunks: hunks, paragraph: paragraph, font: font, colors: colors,
+                                hunkIDPrefix: hunkIDPrefix)
         case .split:
-            return buildSplit(hunks: hunks, paragraph: paragraph, font: font, colors: colors)
+            return buildSplit(hunks: hunks, paragraph: paragraph, font: font, colors: colors,
+                              hunkIDPrefix: hunkIDPrefix)
         }
+    }
+
+    /// 连续滚动：每个文件先占位头，已展开的再接上真正 diff。
+    public static func buildContinuous(
+        sections: [(ContinuousDiffEntry, LoadedDiff?)],
+        layout: DiffLayout = .unified
+    ) -> DiffDocument {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = Theme.codeLineHeight
+        paragraph.maximumLineHeight = Theme.codeLineHeight
+        paragraph.lineBreakMode = .byClipping
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let colors = DiffColors()
+
+        let left = NSMutableAttributedString()
+        let right = layout == .split ? NSMutableAttributedString() : nil
+        var hunkHeaders: [DiffHunkHeader] = []
+        var fileHeaders: [DiffFileHeader] = []
+
+        for (index, section) in sections.enumerated() {
+            if index > 0 {
+                left.append(separatorLine(paragraph: paragraph, font: font))
+                right?.append(separatorLine(paragraph: paragraph, font: font))
+            }
+            appendContinuousSection(
+                section.0, loaded: section.1, layout: layout,
+                left: left, right: right,
+                hunkHeaders: &hunkHeaders, fileHeaders: &fileHeaders,
+                paragraph: paragraph, font: font, colors: colors)
+        }
+
+        return DiffDocument(
+            text: left,
+            splitRight: right,
+            hunkHeaders: hunkHeaders,
+            fileHeaders: fileHeaders)
+    }
+
+    public static func buildContinuousOffMainActor(
+        sections: [(ContinuousDiffEntry, LoadedDiff?)],
+        layout: DiffLayout = .unified
+    ) async -> DiffDocument {
+        await Task.detached(priority: .userInitiated) {
+            buildContinuous(sections: sections, layout: layout)
+        }.value
     }
 
     /// 把大文档的构建挪出主线程。DiffDocument 以 @unchecked Sendable 跨隔离域交回。
@@ -146,7 +213,8 @@ public enum DiffDocumentBuilder {
     private static func buildUnified(hunks: [Hunk],
                                      paragraph: NSParagraphStyle,
                                      font: NSFont,
-                                     colors: DiffColors) -> DiffDocument {
+                                     colors: DiffColors,
+                                     hunkIDPrefix: String) -> DiffDocument {
         let document = NSMutableAttributedString()
         var headers: [DiffHunkHeader] = []
         headers.reserveCapacity(hunks.count)
@@ -157,7 +225,7 @@ public enum DiffDocumentBuilder {
             let header = headerLine(for: hunk, paragraph: paragraph, font: font)
             document.append(header)
             headers.append(DiffHunkHeader(
-                id: hunk.id,
+                id: hunkIDPrefix + hunk.id,
                 range: NSRange(location: location, length: header.length)))
             for line in hunk.lines {
                 document.append(bodyLine(line, gutter: .unified,
@@ -170,7 +238,8 @@ public enum DiffDocumentBuilder {
     private static func buildSplit(hunks: [Hunk],
                                    paragraph: NSParagraphStyle,
                                    font: NSFont,
-                                   colors: DiffColors) -> DiffDocument {
+                                   colors: DiffColors,
+                                   hunkIDPrefix: String) -> DiffDocument {
         let left = NSMutableAttributedString()
         let right = NSMutableAttributedString()
         var headers: [DiffHunkHeader] = []
@@ -186,7 +255,7 @@ public enum DiffDocumentBuilder {
             left.append(header)
             right.append(header)
             headers.append(DiffHunkHeader(
-                id: hunk.id,
+                id: hunkIDPrefix + hunk.id,
                 range: NSRange(location: location, length: header.length)))
             for line in hunk.lines {
                 appendSplitLine(line, left: left, right: right,
@@ -194,6 +263,109 @@ public enum DiffDocumentBuilder {
             }
         }
         return DiffDocument(text: left, splitRight: right, hunkHeaders: headers)
+    }
+
+    private static func appendContinuousSection(
+        _ entry: ContinuousDiffEntry,
+        loaded: LoadedDiff?,
+        layout: DiffLayout,
+        left: NSMutableAttributedString,
+        right: NSMutableAttributedString?,
+        hunkHeaders: inout [DiffHunkHeader],
+        fileHeaders: inout [DiffFileHeader],
+        paragraph: NSParagraphStyle,
+        font: NSFont,
+        colors: DiffColors
+    ) {
+        let header = fileHeaderLine(title: entry.headerTitle, paragraph: paragraph, font: font)
+        let headerRange = NSRange(location: left.length, length: header.length)
+        left.append(header)
+        right?.append(header)
+
+        switch loaded {
+        case .none:
+            fileHeaders.append(DiffFileHeader(
+                id: entry.id, range: headerRange, isPlaceholder: true, isCollapsed: false))
+        case .collapsed(let reason, _):
+            fileHeaders.append(DiffFileHeader(
+                id: entry.id, range: headerRange, isPlaceholder: false, isCollapsed: true))
+            let note = statusNote(
+                "这是生成文件或体积过大的文件（\(reason.explanation)），已默认折叠。\n",
+                paragraph: paragraph, font: font)
+            left.append(note)
+            right?.append(note)
+        case .ready(let diff):
+            fileHeaders.append(DiffFileHeader(
+                id: entry.id, range: headerRange, isPlaceholder: false, isCollapsed: false))
+            appendReadyDiff(diff, layout: layout, hunkIDPrefix: entry.id + ":",
+                            left: left, right: right, hunkHeaders: &hunkHeaders,
+                            paragraph: paragraph, font: font, colors: colors)
+        }
+    }
+
+    private static func appendReadyDiff(
+        _ diff: FileDiff,
+        layout: DiffLayout,
+        hunkIDPrefix: String,
+        left: NSMutableAttributedString,
+        right: NSMutableAttributedString?,
+        hunkHeaders: inout [DiffHunkHeader],
+        paragraph: NSParagraphStyle,
+        font: NSFont,
+        colors: DiffColors
+    ) {
+        switch diff.content {
+        case .textual(let hunks) where !hunks.isEmpty:
+            let part = build(diff, layout: layout, hunkIDPrefix: hunkIDPrefix)
+            let offset = left.length
+            left.append(part.text)
+            if let rightText = part.splitRight {
+                right?.append(rightText)
+            } else if let right {
+                right.append(part.text)
+            }
+            hunkHeaders.append(contentsOf: part.hunkHeaders.map {
+                DiffHunkHeader(
+                    id: $0.id,
+                    range: NSRange(location: $0.range.location + offset, length: $0.range.length))
+            })
+        case .binary:
+            let note = statusNote("二进制文件\n", paragraph: paragraph, font: font)
+            left.append(note)
+            right?.append(note)
+        case .modeChangeOnly(let oldMode, let newMode):
+            let note = statusNote("只有文件权限变化  \(oldMode) → \(newMode)\n",
+                                  paragraph: paragraph, font: font)
+            left.append(note)
+            right?.append(note)
+        default:
+            let note = statusNote("此文件没有文本差异\n", paragraph: paragraph, font: font)
+            left.append(note)
+            right?.append(note)
+        }
+    }
+
+    private static func fileHeaderLine(title: String,
+                                       paragraph: NSParagraphStyle,
+                                       font: NSFont) -> NSAttributedString {
+        NSAttributedString(string: title + "\n", attributes: [
+            .font: font,
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .backgroundColor: NSColor.textColor.withAlphaComponent(0.08),
+            .paragraphStyle: paragraph,
+            .siftRole: "header",
+        ])
+    }
+
+    private static func statusNote(_ text: String,
+                                   paragraph: NSParagraphStyle,
+                                   font: NSFont) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: paragraph,
+            .siftRole: "header",
+        ])
     }
 
     private static func appendSplitLine(_ line: DiffLine,

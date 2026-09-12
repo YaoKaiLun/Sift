@@ -28,17 +28,34 @@ public final class RepoStore {
         }
     }
 
+    public struct DiffFileHeader: Sendable, Equatable {
+        public let id: String
+        public let range: NSRange
+        public let isPlaceholder: Bool
+        public let isCollapsed: Bool
+
+        public init(id: String, range: NSRange, isPlaceholder: Bool, isCollapsed: Bool) {
+            self.id = id
+            self.range = range
+            self.isPlaceholder = isPlaceholder
+            self.isCollapsed = isCollapsed
+        }
+    }
+
     public struct DiffDocument: @unchecked Sendable {
         public let text: NSAttributedString
         public let splitRight: NSAttributedString?
         public let hunkHeaders: [DiffHunkHeader]
+        public let fileHeaders: [DiffFileHeader]
 
         public init(text: NSAttributedString,
                     splitRight: NSAttributedString? = nil,
-                    hunkHeaders: [DiffHunkHeader]) {
+                    hunkHeaders: [DiffHunkHeader],
+                    fileHeaders: [DiffFileHeader] = []) {
             self.text = text
             self.splitRight = splitRight
             self.hunkHeaders = hunkHeaders
+            self.fileHeaders = fileHeaders
         }
     }
 
@@ -56,6 +73,14 @@ public final class RepoStore {
     public private(set) var diffDocument: DiffDocument?
     /// DiffPane 用它触发后台构建；每次 `loadedDiff` 变化都递增。
     public private(set) var diffEpoch = 0
+    /// 连续滚动占位列表。只来自 status / numstat，不含 git diff。
+    public private(set) var continuousPlan: [ContinuousDiffEntry] = []
+    /// 已按视口展开的文件。key 与 `ContinuousDiffEntry.id` 相同。
+    public private(set) var continuousLoaded: [String: LoadedDiff] = [:]
+    /// 中栏点击后，DiffPane 滚到该文件头。
+    public private(set) var continuousRevealID: String?
+    /// 展开后重建文档时保住滚动位置。
+    public private(set) var continuousPreservesScroll = false
     public private(set) var isLoadingFileList = false
     /// 同一时刻只允许一个在途写；为 true 时写方法立即 return。
     public private(set) var isMutating = false
@@ -122,6 +147,7 @@ public final class RepoStore {
     /// 在途任务句柄。切换选择时取消旧任务——这是"切换即取消"约束的落点。
     private var fileListTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
+    private var continuousExpandTasks: [String: Task<Void, Never>] = [:]
     private(set) var explainTask: Task<Void, Never>?
     /// 测试可注入；生产路径走 `OpenAICompatibleProvider`。
     var explainProviderOverride: (any ExplainProvider)?
@@ -175,6 +201,10 @@ public final class RepoStore {
             stagedLineStats = [:]
             unstagedLineStats = [:]
             selectedFile = nil
+            cancelContinuousExpands()
+            continuousPlan = []
+            continuousLoaded = [:]
+            continuousRevealID = nil
             setLoadedDiff(nil)
             watcher = nil
             resetExplainConversation(keepingPanel: false)
@@ -189,6 +219,11 @@ public final class RepoStore {
         // 切换 worktree：取消旧的所有在途工作。
         fileListTask?.cancel()
         diffTask?.cancel()
+        cancelContinuousExpands()
+        continuousPlan = []
+        continuousLoaded = [:]
+        continuousRevealID = nil
+        continuousPreservesScroll = false
         resetExplainConversation(keepingPanel: false)
 
         selectedWorktree = worktree
@@ -204,6 +239,17 @@ public final class RepoStore {
     }
 
     public func select(file: FileStatus, staged: Bool) async {
+        if usesContinuousDiff {
+            let fileChanged = selectedFile?.path != file.path || selectedFileIsStaged != staged
+            if fileChanged {
+                resetExplainConversation(keepingPanel: true)
+            }
+            selectedFile = file
+            selectedFileIsStaged = staged
+            continuousRevealID = "\(staged ? "s" : "u"):\(file.path)"
+            return
+        }
+
         diffTask?.cancel()
         let fileChanged = selectedFile?.path != file.path || selectedFileIsStaged != staged
         if fileChanged {
@@ -237,6 +283,10 @@ public final class RepoStore {
 
     /// 用户在折叠占位条上点了"仍要查看"。
     public func expandCollapsedDiff() async {
+        if usesContinuousDiff, let file = selectedFile {
+            expandContinuousCollapsed(id: "\(selectedFileIsStaged ? "s" : "u"):\(file.path)")
+            return
+        }
         diffTask?.cancel()
         guard let file = selectedFile, let worktree = selectedWorktree else { return }
         let staged = selectedFileIsStaged
@@ -267,6 +317,74 @@ public final class RepoStore {
     public func updateDiffDocument(_ document: DiffDocument?, epoch: Int) {
         guard epoch == diffEpoch else { return }
         diffDocument = document
+    }
+
+    /// 单文件 / 连续滚动切换。连续模式只建占位计划，不预先 load。
+    public func handleBrowseModeChange() async {
+        if usesContinuousDiff {
+            guard continuousPlan.isEmpty else { return }
+            diffTask?.cancel()
+            loadedDiff = nil
+            diffDocument = nil
+            rebuildContinuousPlan(preservesScroll: false)
+        } else {
+            guard !continuousPlan.isEmpty || !continuousLoaded.isEmpty else { return }
+            cancelContinuousExpands()
+            continuousPlan = []
+            continuousLoaded = [:]
+            continuousRevealID = nil
+            continuousPreservesScroll = false
+            if let file = selectedFile {
+                await select(file: file, staged: selectedFileIsStaged)
+            } else {
+                setLoadedDiff(nil)
+            }
+        }
+    }
+
+    /// DiffTextView 报告可见字符范围后，只展开与视口相交的占位头。
+    public func loadContinuousEntries(visibleRange: NSRange, fileRanges: [String: NSRange]) {
+        guard usesContinuousDiff else { return }
+        let needed = ContinuousDiffPlan.entriesNeedingLoad(
+            continuousPlan,
+            ranges: fileRanges,
+            visibleRange: visibleRange,
+            alreadyLoaded: Set(continuousLoaded.keys))
+        for entry in needed {
+            startContinuousExpand(entry, ignoringCollapse: false)
+        }
+    }
+
+    public func expandContinuousCollapsed(id: String) {
+        guard let entry = continuousPlan.first(where: { $0.id == id }) else { return }
+        continuousExpandTasks[id]?.cancel()
+        continuousExpandTasks[id] = nil
+        startContinuousExpand(entry, ignoringCollapse: true)
+    }
+
+    public func consumeContinuousReveal() {
+        continuousRevealID = nil
+    }
+
+    public func hunk(matching id: String) -> Hunk? {
+        if usesContinuousDiff {
+            return resolveContinuousHunk(id)?.hunk
+        }
+        guard case .ready(let diff) = loadedDiff else { return nil }
+        return diff.hunks.first { $0.id == id }
+    }
+
+    public func fileForHunk(id: String) -> (file: FileStatus, staged: Bool)? {
+        if usesContinuousDiff, let resolved = resolveContinuousHunk(id) {
+            return (resolved.entry.status, resolved.entry.staged)
+        }
+        guard let file = selectedFile else { return nil }
+        return (file, selectedFileIsStaged)
+    }
+
+    public func hunkIsStaged(_ id: String) -> Bool? {
+        guard let info = fileForHunk(id: id), !info.file.isUntracked else { return nil }
+        return info.staged
     }
 
     // MARK: - 解释
@@ -352,6 +470,11 @@ public final class RepoStore {
                     self.stagedLineStats = stats.staged
                     self.unstagedLineStats = stats.unstaged
                     self.isLoadingFileList = false
+                    if self.usesContinuousDiff {
+                        self.reconcileContinuousSelection(with: statuses)
+                        self.rebuildContinuousPlan(preservesScroll: self.diffDocument != nil)
+                        return nil
+                    }
                     return self.reconcileSelection(with: statuses)
                 }
 
@@ -394,27 +517,30 @@ public final class RepoStore {
         await mutate(path: file.path) { try await $0.deleteUntracked(path: file.path) }
     }
 
-    public func stage(hunk: Hunk) async {
-        guard let file = selectedFile else { return }
-        let kind = patchKind(for: file)
+    public func stage(hunk: Hunk, file: FileStatus? = nil, stagedSide: Bool? = nil) async {
+        guard let file = file ?? selectedFile else { return }
+        let staged = stagedSide ?? selectedFileIsStaged
+        let kind = patchKind(for: file, staged: staged)
         await mutate(path: file.path) {
             try await $0.stage(hunk: hunk, path: file.path,
                                originalPath: file.originalPath, kind: kind)
         }
     }
 
-    public func unstage(hunk: Hunk) async {
-        guard let file = selectedFile else { return }
-        let kind = patchKind(for: file)
+    public func unstage(hunk: Hunk, file: FileStatus? = nil, stagedSide: Bool? = nil) async {
+        guard let file = file ?? selectedFile else { return }
+        let staged = stagedSide ?? selectedFileIsStaged
+        let kind = patchKind(for: file, staged: staged)
         await mutate(path: file.path) {
             try await $0.unstage(hunk: hunk, path: file.path,
                                  originalPath: file.originalPath, kind: kind)
         }
     }
 
-    public func discard(hunk: Hunk) async {
-        guard let file = selectedFile else { return }
-        let kind = patchKind(for: file)
+    public func discard(hunk: Hunk, file: FileStatus? = nil, stagedSide: Bool? = nil) async {
+        guard let file = file ?? selectedFile else { return }
+        let staged = stagedSide ?? selectedFileIsStaged
+        let kind = patchKind(for: file, staged: staged)
         await mutate(path: file.path) {
             try await $0.discard(hunk: hunk, path: file.path,
                                  originalPath: file.originalPath, kind: kind)
@@ -469,9 +595,10 @@ public final class RepoStore {
         }
     }
 
-    private func patchKind(for file: FileStatus) -> PatchFileKind {
+    private func patchKind(for file: FileStatus, staged: Bool? = nil) -> PatchFileKind {
+        let isStaged = staged ?? selectedFileIsStaged
         if file.isUntracked { return .added }
-        if selectedFileIsStaged {
+        if isStaged {
             if file.indexStatus == .added { return .added }
             if file.indexStatus == .deleted { return .deleted }
         } else {
@@ -495,6 +622,84 @@ public final class RepoStore {
         setLoadedDiff(nil)
         resetExplainConversation(keepingPanel: true)
         return nil
+    }
+
+    private func reconcileContinuousSelection(with statuses: [FileStatus]) {
+        guard let selected = selectedFile else { return }
+        let staged = selectedFileIsStaged
+        if let current = statuses.first(where: { $0.path == selected.path }),
+           Self.sideStillExists(current, staged: staged) {
+            selectedFile = current
+            return
+        }
+        selectedFile = nil
+        continuousRevealID = nil
+        resetExplainConversation(keepingPanel: true)
+    }
+
+    private func rebuildContinuousPlan(preservesScroll: Bool = false) {
+        continuousPlan = ContinuousDiffPlan.build(
+            statuses: fileStatuses,
+            stagedStats: stagedLineStats,
+            unstagedStats: unstagedLineStats)
+        let ids = Set(continuousPlan.map(\.id))
+        continuousLoaded = continuousLoaded.filter { ids.contains($0.key) }
+        for (id, task) in continuousExpandTasks where !ids.contains(id) {
+            task.cancel()
+            continuousExpandTasks[id] = nil
+        }
+        continuousPreservesScroll = preservesScroll
+        diffEpoch += 1
+    }
+
+    private func cancelContinuousExpands() {
+        for task in continuousExpandTasks.values { task.cancel() }
+        continuousExpandTasks.removeAll()
+    }
+
+    private func startContinuousExpand(_ entry: ContinuousDiffEntry, ignoringCollapse: Bool) {
+        if !ignoringCollapse, continuousLoaded[entry.id] != nil { return }
+        guard continuousExpandTasks[entry.id] == nil else { return }
+        guard let worktree = selectedWorktree else { return }
+        let repository = GitRepository(root: worktree.path)
+        let engine = self.engine
+        let worktreePath = worktree.path
+        continuousExpandTasks[entry.id] = Task { [weak self] in
+            do {
+                let diff = ignoringCollapse
+                    ? try await engine.loadIgnoringCollapse(
+                        status: entry.status, staged: entry.staged, from: repository)
+                    : try await engine.load(
+                        status: entry.status, staged: entry.staged, from: repository)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self,
+                          self.usesContinuousDiff,
+                          self.selectedWorktree?.path == worktreePath,
+                          self.continuousPlan.contains(where: { $0.id == entry.id }) else { return }
+                    self.continuousLoaded[entry.id] = diff
+                    self.continuousExpandTasks[entry.id] = nil
+                    self.continuousPreservesScroll = true
+                    self.diffEpoch += 1
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.continuousExpandTasks[entry.id] = nil
+                    self?.errorMessage = "无法加载 diff：\(error)"
+                }
+            }
+        }
+    }
+
+    private func resolveContinuousHunk(_ id: String) -> (entry: ContinuousDiffEntry, hunk: Hunk)? {
+        guard let separator = id.lastIndex(of: ":") else { return nil }
+        let fileID = String(id[..<separator])
+        let hunkID = String(id[id.index(after: separator)...])
+        guard let entry = continuousPlan.first(where: { $0.id == fileID }),
+              case .ready(let diff) = continuousLoaded[fileID],
+              let hunk = diff.hunks.first(where: { $0.id == hunkID }) else { return nil }
+        return (entry, hunk)
     }
 
     private static func sideStillExists(_ status: FileStatus, staged: Bool) -> Bool {
@@ -539,6 +744,13 @@ public final class RepoStore {
     }
 
     private func textualFileDiff() -> String {
+        if usesContinuousDiff {
+            let id = selectedFile.map { "\(selectedFileIsStaged ? "s" : "u"):\($0.path)" }
+            if let id, case .ready(let diff) = continuousLoaded[id] {
+                return diff.hunks.map(\.patchText).joined()
+            }
+            return ""
+        }
         guard case .ready(let diff) = loadedDiff else { return "" }
         return diff.hunks.map(\.patchText).joined()
     }
@@ -661,6 +873,10 @@ public final class RepoStore {
         stagedLineStats = [:]
         unstagedLineStats = [:]
         selectedFile = nil
+        cancelContinuousExpands()
+        continuousPlan = []
+        continuousLoaded = [:]
+        continuousRevealID = nil
         setLoadedDiff(nil)
         watcher = nil
         resetExplainConversation(keepingPanel: false)
