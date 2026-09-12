@@ -10,12 +10,14 @@ let package = Package(
         .library(name: "RepoStore", targets: ["RepoStore"]),
         .library(name: "SiftUI", targets: ["SiftUI"]),
         .library(name: "Highlighter", targets: ["Highlighter"]),
+        .library(name: "AIClient", targets: ["AIClient"]),
     ],
     targets: [
         .target(name: "GitKit"),
         .target(name: "DiffEngine", dependencies: ["GitKit"]),
-        .target(name: "RepoStore", dependencies: ["GitKit", "DiffEngine"]),
+        .target(name: "RepoStore", dependencies: ["GitKit", "DiffEngine", "AIClient"]),
         .target(name: "Highlighter"),
+        .target(name: "AIClient"),
         .target(name: "SiftUI",
                 dependencies: ["GitKit", "DiffEngine", "RepoStore", "Highlighter"],
                 resources: [.process("Resources")]),
@@ -23,6 +25,7 @@ let package = Package(
         .testTarget(name: "DiffEngineTests", dependencies: ["DiffEngine", "SiftUI"]),
         .testTarget(name: "RepoStoreTests", dependencies: ["RepoStore"]),
         .testTarget(name: "HighlighterTests", dependencies: ["Highlighter"]),
+        .testTarget(name: "AIClientTests", dependencies: ["AIClient"]),
         .testTarget(name: "PerformanceTests", dependencies: ["GitKit", "DiffEngine", "RepoStore"]),
     ]
 )
