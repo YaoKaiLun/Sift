@@ -37,6 +37,18 @@ public final class RepoStore {
         didSet { persist() }
     }
 
+    public var appearance: AppearancePreference {
+        didSet { persist() }
+    }
+
+    /// 当前选中 worktree 所属的仓库。侧边栏「移除」用这个，避免按路径再扫一遍。
+    public var selectedRepository: RepositoryEntry? {
+        guard let selected = selectedWorktree else { return nil }
+        return repositories.first { entry in
+            entry.worktrees.contains { $0.path == selected.path }
+        }
+    }
+
     private let engine = DiffEngine()
     private let stateStore: PersistedStateStore
     private var watcher: FileSystemWatcher?
@@ -47,7 +59,9 @@ public final class RepoStore {
 
     public init(stateStore: PersistedStateStore = PersistedStateStore()) {
         self.stateStore = stateStore
-        self.usesTreeView = stateStore.load().usesTreeView
+        let loaded = stateStore.load()
+        self.usesTreeView = loaded.usesTreeView
+        self.appearance = loaded.appearance
     }
 
     // MARK: - 仓库管理
@@ -71,7 +85,7 @@ public final class RepoStore {
     public func removeRepository(root: URL) {
         repositories.removeAll { $0.root == root }
         if let selected = selectedWorktree,
-           !repositories.contains(where: { $0.worktrees.contains(selected) }) {
+           !repositories.contains(where: { $0.worktrees.contains { $0.path == selected.path } }) {
             selectedWorktree = nil
             fileStatuses = []
             stagedLineStats = [:]
@@ -168,6 +182,7 @@ public final class RepoStore {
     // MARK: - 刷新
 
     public func refreshFileList() async {
+        await refreshWorktreeLists()
         guard let worktree = selectedWorktree else { return }
         fileListTask?.cancel()
         isLoadingFileList = true
@@ -277,7 +292,38 @@ public final class RepoStore {
         let state = PersistedState(
             repositoryBookmarks: bookmarks,
             selectedWorktreePath: selectedWorktree?.path.path,
-            usesTreeView: usesTreeView)
+            usesTreeView: usesTreeView,
+            appearance: appearance)
         try? stateStore.save(state)
+    }
+
+    /// 刷新时重新跑 `git worktree list`。添加仓库时拍的快照不会跟着磁盘变。
+    private func refreshWorktreeLists() async {
+        var updated: [RepositoryEntry] = []
+        updated.reserveCapacity(repositories.count)
+        for entry in repositories {
+            do {
+                let worktrees = try await GitRepository(root: entry.root).worktrees()
+                updated.append(RepositoryEntry(root: entry.root, name: entry.name, worktrees: worktrees))
+            } catch {
+                updated.append(entry)
+            }
+        }
+        repositories = updated
+
+        guard let selected = selectedWorktree else { return }
+        let all = repositories.flatMap(\.worktrees)
+        if let match = all.first(where: { $0.path == selected.path }) {
+            selectedWorktree = match
+            return
+        }
+        selectedWorktree = nil
+        fileStatuses = []
+        stagedLineStats = [:]
+        unstagedLineStats = [:]
+        selectedFile = nil
+        setLoadedDiff(nil)
+        watcher = nil
+        persist()
     }
 }

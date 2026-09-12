@@ -86,4 +86,29 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertNil(store.selectedFile)
         XCTAssertNil(store.loadedDiff)
     }
+
+    func testRefreshDiscoversNewWorktrees() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("line1\n", to: "a.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+
+        let store = makeStore()
+        await store.addRepository(at: url)
+        XCTAssertEqual(store.repositories.first?.worktrees.count, 1)
+
+        let linked = url.deletingLastPathComponent()
+            .appendingPathComponent(url.lastPathComponent + "-wt")
+        defer {
+            try? runGit(["worktree", "remove", "--force", linked.path], in: url)
+            try? FileManager.default.removeItem(at: linked)
+        }
+        try runGit(["worktree", "add", "-b", "feature-x", linked.path], in: url)
+
+        await store.refreshFileList()
+        let names = store.repositories.first?.worktrees.map(\.displayName) ?? []
+        XCTAssertEqual(store.repositories.first?.worktrees.count, 2)
+        XCTAssertTrue(names.contains("feature-x"), "刷新必须重新跑 git worktree list，实际是 \(names)")
+    }
 }
