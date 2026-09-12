@@ -202,4 +202,75 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertEqual(Array(store.continuousLoaded.keys), [first.id],
                        "视口外的文件不得调用 git diff")
     }
+
+    func testContinuousStageHunkReloadsOnNextVisibleRange() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let original = (1...60).map { "line\($0)" }.joined(separator: "\n") + "\n"
+        try write(original, to: "a.txt", in: url)
+        try write("b\n", to: "b.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+
+        var lines = (1...60).map { "line\($0)" }
+        lines[2] = "FIRST"
+        lines[50] = "SECOND"
+        try write(lines.joined(separator: "\n") + "\n", to: "a.txt", in: url)
+        try write("b\nB\n", to: "b.txt", in: url)
+
+        let store = makeStore()
+        store.usesContinuousDiff = true
+        await store.addRepository(at: url)
+
+        let unstagedA = try XCTUnwrap(store.continuousPlan.first { $0.id == "u:a.txt" })
+        let unstagedB = try XCTUnwrap(store.continuousPlan.first { $0.id == "u:b.txt" })
+        let visibleA = NSRange(location: 0, length: 10)
+        let offscreenB = NSRange(location: 50, length: 10)
+        store.loadContinuousEntries(
+            visibleRange: visibleA,
+            fileRanges: [
+                unstagedA.id: visibleA,
+                unstagedB.id: offscreenB,
+            ])
+
+        let loadDeadline = Date().addingTimeInterval(2)
+        while store.continuousLoaded[unstagedA.id] == nil, Date() < loadDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard case .ready(let first) = store.continuousLoaded[unstagedA.id] else {
+            return XCTFail("应先展开 a.txt，实际是 \(String(describing: store.continuousLoaded[unstagedA.id]))")
+        }
+        XCTAssertEqual(first.hunks.count, 2)
+        XCTAssertTrue(first.hunks.flatMap(\.lines).contains(where: { $0.text == "FIRST" }))
+        XCTAssertNil(store.continuousLoaded[unstagedB.id], "视口外不得 load")
+
+        let hunk = try XCTUnwrap(first.hunks.first)
+        let file = try XCTUnwrap(store.fileStatuses.first { $0.path == "a.txt" })
+        await store.stage(hunk: hunk, file: file, stagedSide: false)
+
+        XCTAssertNil(store.continuousLoaded[unstagedA.id],
+                     "hunk 暂存后必须丢掉过期的连续滚动缓存")
+        XCTAssertNil(store.continuousLoaded[unstagedB.id],
+                     "不得为刷新而强制 load 视口外文件")
+
+        store.loadContinuousEntries(
+            visibleRange: visibleA,
+            fileRanges: [
+                unstagedA.id: visibleA,
+                unstagedB.id: offscreenB,
+            ])
+
+        let reloadDeadline = Date().addingTimeInterval(2)
+        while store.continuousLoaded[unstagedA.id] == nil, Date() < reloadDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard case .ready(let second) = store.continuousLoaded[unstagedA.id] else {
+            return XCTFail("下一轮视口应重载 a.txt，实际是 \(String(describing: store.continuousLoaded[unstagedA.id]))")
+        }
+        XCTAssertFalse(second.hunks.flatMap(\.lines).contains(where: { $0.text == "FIRST" }),
+                       "未暂存侧不应再含已暂存的 hunk")
+        XCTAssertTrue(second.hunks.flatMap(\.lines).contains(where: { $0.text == "SECOND" }))
+        XCTAssertNil(store.continuousLoaded[unstagedB.id], "视口外仍不得 load")
+    }
 }

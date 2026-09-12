@@ -471,6 +471,9 @@ public final class RepoStore {
                     self.unstagedLineStats = stats.unstaged
                     self.isLoadingFileList = false
                     if self.usesContinuousDiff {
+                        if invalidateAllCachedDiffs {
+                            self.invalidateContinuousLoaded()
+                        }
                         self.reconcileContinuousSelection(with: statuses)
                         self.rebuildContinuousPlan(preservesScroll: self.diffDocument != nil)
                         return nil
@@ -589,6 +592,7 @@ public final class RepoStore {
         do {
             try await body(repository)
             await engine.invalidate(worktreePath: worktree.path, filePath: path)
+            invalidateContinuousLoaded(ids: ["s:\(path)", "u:\(path)"])
             await refreshFileList(invalidateAllCachedDiffs: false)
         } catch {
             errorMessage = "无法完成操作：\(error)"
@@ -652,6 +656,21 @@ public final class RepoStore {
         diffEpoch += 1
     }
 
+    /// DiffEngine 失效后必须同步丢掉连续滚动的第二份缓存，否则
+    /// `loadContinuousEntries` 会把仍在 map 里的 id 当成 `alreadyLoaded` 而跳过 git diff。
+    private func invalidateContinuousLoaded(ids: Set<String>? = nil) {
+        if let ids {
+            for id in ids {
+                continuousExpandTasks[id]?.cancel()
+                continuousExpandTasks[id] = nil
+                continuousLoaded.removeValue(forKey: id)
+            }
+        } else {
+            cancelContinuousExpands()
+            continuousLoaded = [:]
+        }
+    }
+
     private func cancelContinuousExpands() {
         for task in continuousExpandTasks.values { task.cancel() }
         continuousExpandTasks.removeAll()
@@ -674,6 +693,7 @@ public final class RepoStore {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard let self,
+                          !Task.isCancelled,
                           self.usesContinuousDiff,
                           self.selectedWorktree?.path == worktreePath,
                           self.continuousPlan.contains(where: { $0.id == entry.id }) else { return }
