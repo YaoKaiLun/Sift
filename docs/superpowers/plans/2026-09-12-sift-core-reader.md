@@ -103,7 +103,7 @@ Sift/
 - [ ] **Step 1: 创建 Package.swift**
 
 ```swift
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
@@ -149,7 +149,7 @@ public enum GitError: Error, Sendable, Equatable {
 Run: `swift build`
 Expected: `Build complete!`
 
-如果 `.macOS(.v26)` 报错说该 case 不存在，改为 `.macOS("26.0")` 后重跑。
+`.macOS(.v26)` 需要 swift-tools-version 6.2 或更高——6.0 的 PackageDescription 里没有这个 case，会报错。清单第一行必须是 `// swift-tools-version: 6.2`。
 
 - [ ] **Step 4: 写 FixtureRepo**
 
