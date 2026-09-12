@@ -88,11 +88,15 @@ public struct GitRunner: Sendable {
         process.arguments = arguments
         process.currentDirectoryURL = directory
         // 禁止 git 弹凭证提示（否则子进程会永远挂着）。
-        // 只读操作设置 GIT_OPTIONAL_LOCKS=0，避免抢 index 锁；写操作必须省略该变量。
+        // 只读操作设置 GIT_OPTIONAL_LOCKS=0，避免抢 index 锁；写操作必须拿 index 锁。
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
         if optionalLocks {
             environment["GIT_OPTIONAL_LOCKS"] = "0"
+        } else {
+            // 必须显式移除：ProcessInfo 会继承父进程的 GIT_OPTIONAL_LOCKS=0，
+            // 仅“不设置”无法覆盖，写操作会错误地跳过 index 锁。
+            environment.removeValue(forKey: "GIT_OPTIONAL_LOCKS")
         }
         process.environment = environment
 
