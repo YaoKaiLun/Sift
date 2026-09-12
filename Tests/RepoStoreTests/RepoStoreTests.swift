@@ -273,4 +273,49 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertTrue(second.hunks.flatMap(\.lines).contains(where: { $0.text == "SECOND" }))
         XCTAssertNil(store.continuousLoaded[unstagedB.id], "视口外仍不得 load")
     }
+
+    func testFullRefreshDropsContinuousLoadedBeforeCancelCanRace() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("a\n", to: "a.txt", in: url)
+        try write("b\n", to: "b.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("a\nA\n", to: "a.txt", in: url)
+        try write("b\nB\n", to: "b.txt", in: url)
+
+        let store = makeStore()
+        store.usesContinuousDiff = true
+        await store.addRepository(at: url)
+
+        let unstagedA = try XCTUnwrap(store.continuousPlan.first { $0.id == "u:a.txt" })
+        let unstagedB = try XCTUnwrap(store.continuousPlan.first { $0.id == "u:b.txt" })
+        let visible = NSRange(location: 0, length: 20)
+        store.loadContinuousEntries(
+            visibleRange: visible,
+            fileRanges: [
+                unstagedA.id: NSRange(location: 0, length: 10),
+                unstagedB.id: NSRange(location: 10, length: 10),
+            ])
+
+        let loadDeadline = Date().addingTimeInterval(2)
+        while store.continuousLoaded[unstagedA.id] == nil
+                || store.continuousLoaded[unstagedB.id] == nil,
+              Date() < loadDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertNotNil(store.continuousLoaded[unstagedA.id])
+        XCTAssertNotNil(store.continuousLoaded[unstagedB.id])
+
+        let fullRefresh = Task { await store.refreshFileList(invalidateAllCachedDiffs: true) }
+        var spins = 0
+        while !store.isLoadingFileList, spins < 10_000 {
+            await Task.yield()
+            spins += 1
+        }
+        XCTAssertTrue(store.isLoadingFileList, "应观察到全量刷新已启动")
+        XCTAssertTrue(store.continuousLoaded.isEmpty,
+                      "全量失效必须在 cancel/spawn 之前丢掉连续滚动缓存")
+        await fullRefresh.value
+    }
 }

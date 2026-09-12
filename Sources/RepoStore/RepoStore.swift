@@ -446,6 +446,9 @@ public final class RepoStore {
     public func refreshFileList(invalidateAllCachedDiffs: Bool = true) async {
         await refreshWorktreeLists()
         guard let worktree = selectedWorktree else { return }
+        if invalidateAllCachedDiffs {
+            invalidateContinuousLoaded()
+        }
         fileListTask?.cancel()
         isLoadingFileList = true
 
