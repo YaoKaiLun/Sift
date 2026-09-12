@@ -44,10 +44,18 @@ struct DiffTextView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView,
               let storage = textView.textStorage else { return }
-        // 内容没变就什么都不做，避免 SwiftUI 每次重绘都重建文档。
-        guard storage.string != document.string else { return }
+        if storage.string == document.string {
+            if storage.isEqual(to: document) { return }
+            // attribute-only：不重置滚动位置
+            storage.beginEditing()
+            document.enumerateAttributes(in: NSRange(location: 0, length: document.length)) { attrs, range, _ in
+                storage.setAttributes(attrs, range: range)
+            }
+            storage.endEditing()
+            return
+        }
         storage.beginEditing()
-        storage.setAttributedString(document)
+        storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: document)
         storage.endEditing()
         textView.scroll(NSPoint(x: 0, y: 0))
     }
