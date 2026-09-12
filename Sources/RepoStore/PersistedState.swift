@@ -17,6 +17,10 @@ public struct PersistedState: Codable, Sendable, Equatable {
     /// OpenAI 兼容接口的根路径。缺省空，不预填任何服务商。
     public var explainBaseURL: String
     public var explainModel: String
+    public var sidebarWidth: Double
+    public var fileListWidth: Double
+    public var usesContinuousDiff: Bool
+    public var showsBlame: Bool
 
     public init(repositoryBookmarks: [Data] = [],
                 selectedWorktreePath: String? = nil,
@@ -24,7 +28,11 @@ public struct PersistedState: Codable, Sendable, Equatable {
                 usesSplitDiff: Bool = false,
                 appearance: AppearancePreference = .system,
                 explainBaseURL: String = "",
-                explainModel: String = "") {
+                explainModel: String = "",
+                sidebarWidth: Double = 220,
+                fileListWidth: Double = 300,
+                usesContinuousDiff: Bool = false,
+                showsBlame: Bool = false) {
         self.repositoryBookmarks = repositoryBookmarks
         self.selectedWorktreePath = selectedWorktreePath
         self.usesTreeView = usesTreeView
@@ -32,6 +40,10 @@ public struct PersistedState: Codable, Sendable, Equatable {
         self.appearance = appearance
         self.explainBaseURL = explainBaseURL
         self.explainModel = explainModel
+        self.sidebarWidth = sidebarWidth
+        self.fileListWidth = fileListWidth
+        self.usesContinuousDiff = usesContinuousDiff
+        self.showsBlame = showsBlame
     }
 
     public init(from decoder: Decoder) throws {
@@ -43,6 +55,10 @@ public struct PersistedState: Codable, Sendable, Equatable {
         appearance = try container.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
         explainBaseURL = try container.decodeIfPresent(String.self, forKey: .explainBaseURL) ?? ""
         explainModel = try container.decodeIfPresent(String.self, forKey: .explainModel) ?? ""
+        sidebarWidth = try container.decodeIfPresent(Double.self, forKey: .sidebarWidth) ?? 220
+        fileListWidth = try container.decodeIfPresent(Double.self, forKey: .fileListWidth) ?? 300
+        usesContinuousDiff = try container.decodeIfPresent(Bool.self, forKey: .usesContinuousDiff) ?? false
+        showsBlame = try container.decodeIfPresent(Bool.self, forKey: .showsBlame) ?? false
     }
 }
 

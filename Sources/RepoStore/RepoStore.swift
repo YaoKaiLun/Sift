@@ -81,6 +81,22 @@ public final class RepoStore {
         didSet { persist() }
     }
 
+    public var sidebarWidth: Double {
+        didSet { persist() }
+    }
+
+    public var fileListWidth: Double {
+        didSet { persist() }
+    }
+
+    public var usesContinuousDiff: Bool {
+        didSet { persist() }
+    }
+
+    public var showsBlame: Bool {
+        didSet { persist() }
+    }
+
     /// 只走 Keychain，不写 state.json。
     public var explainAPIKey: String {
         didSet { saveExplainAPIKey() }
@@ -129,6 +145,10 @@ public final class RepoStore {
         self.appearance = loaded.appearance
         self.explainBaseURL = loaded.explainBaseURL
         self.explainModel = loaded.explainModel
+        self.sidebarWidth = loaded.sidebarWidth
+        self.fileListWidth = loaded.fileListWidth
+        self.usesContinuousDiff = loaded.usesContinuousDiff
+        self.showsBlame = loaded.showsBlame
         self.explainAPIKey = keychain.get("api-key") ?? ""
     }
 
@@ -505,7 +525,11 @@ public final class RepoStore {
             usesSplitDiff: usesSplitDiff,
             appearance: appearance,
             explainBaseURL: explainBaseURL,
-            explainModel: explainModel)
+            explainModel: explainModel,
+            sidebarWidth: sidebarWidth,
+            fileListWidth: fileListWidth,
+            usesContinuousDiff: usesContinuousDiff,
+            showsBlame: showsBlame)
         try? stateStore.save(state)
     }
 

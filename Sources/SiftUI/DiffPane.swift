@@ -121,6 +121,14 @@ struct DiffPane: View {
                             falseIcon: "rectangle.split.1x2",
                             trueIcon: "rectangle.split.2x1",
                             help: "切换统一视图与分栏视图")
+            PlainIconToggle(selection: $store.usesContinuousDiff,
+                            falseIcon: "doc.text",
+                            trueIcon: "doc.on.doc",
+                            help: "切换单文件与连续滚动")
+            PlainIconToggle(selection: $store.showsBlame,
+                            falseIcon: "person.crop.circle",
+                            trueIcon: "person.crop.circle.fill",
+                            help: "显示或隐藏 blame 侧槽")
         }
     }
 

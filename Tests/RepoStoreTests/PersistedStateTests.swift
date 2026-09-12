@@ -79,6 +79,22 @@ final class PersistedStateTests: XCTestCase {
         XCTAssertFalse(state.usesSplitDiff)
     }
 
+    /// 旧版 state.json 没有浏览模式字段时，栏宽与开关必须落到缺省。
+    func testMissingBrowseFieldsUseDefaults() throws {
+        let url = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"repositoryBookmarks":[],"usesTreeView":true}"#.utf8).write(to: url)
+
+        let state = PersistedStateStore(fileURL: url).load()
+        XCTAssertTrue(state.usesTreeView)
+        XCTAssertEqual(state.sidebarWidth, 220)
+        XCTAssertEqual(state.fileListWidth, 300)
+        XCTAssertFalse(state.usesContinuousDiff)
+        XCTAssertFalse(state.showsBlame)
+    }
+
     /// 旧版 state.json 没有解释设置时，Base URL 与模型名必须落到空字符串。
     func testMissingExplainFieldsDefaultToEmptyString() throws {
         let url = temporaryFile()
