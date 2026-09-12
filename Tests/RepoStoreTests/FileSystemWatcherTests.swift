@@ -49,6 +49,24 @@ final class FileSystemWatcherTests: XCTestCase {
         XCTAssertLessThanOrEqual(count, 3, "50 次写入应被合并成很少几次，实际 \(count) 次")
     }
 
+    /// deinit 必须能在 in-flight FSEvents 回调存在时安全拆掉 stream，不能 UAF。
+    func testDeinitDuringEventsDoesNotCrash() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        do {
+            let watcher = FileSystemWatcher(path: directory, debounce: .milliseconds(100)) {}
+            Thread.sleep(forTimeInterval: 0.3)
+            try? "hello".write(to: directory.appendingPathComponent("a.txt"),
+                               atomically: true, encoding: .utf8)
+            Thread.sleep(forTimeInterval: 0.05)
+            withExtendedLifetime(watcher) {}
+        }
+        try? "world".write(to: directory.appendingPathComponent("b.txt"),
+                           atomically: true, encoding: .utf8)
+        Thread.sleep(forTimeInterval: 0.4)
+    }
+
     private final class Counter: @unchecked Sendable {
         private let lock = NSLock()
         private var storage = 0

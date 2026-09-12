@@ -1,6 +1,47 @@
 import Foundation
 import CoreServices
 
+/// FSEvents C 回调持有这份状态，而不是 `FileSystemWatcher`。
+/// 这样 stream 的 extra retain 不会和 Watcher 形成环，deinit 也不会把 in-flight 回调变成 UAF。
+private final class WatcherState: @unchecked Sendable {
+    let debounce: Duration
+    let onChange: @Sendable () -> Void
+    let queue: DispatchQueue
+    var pendingWork: DispatchWorkItem?
+    let lock = NSLock()
+    var stopped = false
+
+    init(debounce: Duration, queue: DispatchQueue, onChange: @escaping @Sendable () -> Void) {
+        self.debounce = debounce
+        self.queue = queue
+        self.onChange = onChange
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        pendingWork?.cancel()
+        pendingWork = nil
+        lock.unlock()
+    }
+
+    func scheduleCallback() {
+        lock.lock()
+        if stopped {
+            lock.unlock()
+            return
+        }
+        pendingWork?.cancel()
+        let work = DispatchWorkItem { [onChange] in onChange() }
+        pendingWork = work
+        lock.unlock()
+
+        let milliseconds = Int(Double(debounce.components.seconds) * 1000
+            + Double(debounce.components.attoseconds) / 1e15)
+        queue.asyncAfter(deadline: .now() + .milliseconds(milliseconds), execute: work)
+    }
+}
+
 /// 基于 FSEvents 的目录监听，带防抖。
 ///
 /// 这是"永不轮询"这条约束的落点。Sourcetree 给每个书签仓库挂定时器，
@@ -11,25 +52,28 @@ import CoreServices
 public final class FileSystemWatcher: @unchecked Sendable {
     private var stream: FSEventStreamRef?
     private let queue = DispatchQueue(label: "app.sift.fswatch", qos: .utility)
-    private let debounce: Duration
-    private let onChange: @Sendable () -> Void
-    private var pendingWork: DispatchWorkItem?
-    private let lock = NSLock()
+    private let state: WatcherState
 
     public init(path: URL, debounce: Duration = .milliseconds(100),
                 onChange: @escaping @Sendable () -> Void) {
-        self.debounce = debounce
-        self.onChange = onChange
+        let state = WatcherState(debounce: debounce, queue: queue, onChange: onChange)
+        self.state = state
 
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
+            info: Unmanaged.passRetained(state).toOpaque(),
             retain: nil, release: nil, copyDescription: nil)
 
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info else { return }
-            let watcher = Unmanaged<FileSystemWatcher>.fromOpaque(info).takeUnretainedValue()
-            watcher.scheduleCallback()
+            let unmanaged = Unmanaged<WatcherState>.fromOpaque(info)
+            let state = unmanaged.retain().takeUnretainedValue()
+            defer { unmanaged.release() }
+            state.lock.lock()
+            let stopped = state.stopped
+            state.lock.unlock()
+            if stopped { return }
+            state.scheduleCallback()
         }
 
         // latency 交给 FSEvents 做第一层合并，我们自己的 debounce 做第二层。
@@ -53,26 +97,13 @@ public final class FileSystemWatcher: @unchecked Sendable {
     }
 
     deinit {
-        lock.lock()
-        pendingWork?.cancel()
-        lock.unlock()
+        state.stop()
         if let stream {
             FSEventStreamStop(stream)
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)
         }
-    }
-
-    /// 每次事件都把已排队的回调往后推，直到安静满一个 debounce 窗口才真正执行。
-    private func scheduleCallback() {
-        lock.lock()
-        pendingWork?.cancel()
-        let work = DispatchWorkItem { [onChange] in onChange() }
-        pendingWork = work
-        lock.unlock()
-
-        let milliseconds = Int(Double(debounce.components.seconds) * 1000
-            + Double(debounce.components.attoseconds) / 1e15)
-        queue.asyncAfter(deadline: .now() + .milliseconds(milliseconds), execute: work)
+        // 对冲 create 时 passRetained 交给 stream 的那一次 extra retain。
+        Unmanaged.passUnretained(state).release()
     }
 }
