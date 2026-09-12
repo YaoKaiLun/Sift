@@ -3673,9 +3673,9 @@ git commit -m "feat(SiftUI): 应用壳与三栏界面"
 
 **Interfaces:**
 - Consumes: Task 5 的 `FileDiff` / `Hunk` / `DiffLine`，Task 8 的 `LoadedDiff`，Task 10 的 `RepoStore`，Task 12 的 `Theme`。
-- Produces: `DiffDocumentBuilder` 枚举，静态方法 `build(_ diff: FileDiff, layout: DiffLayout) -> NSAttributedString`；`DiffLayout` 枚举（`.unified`、`.split`）；`DiffTextView` 结构体（`NSViewRepresentable`，`init(document: NSAttributedString)`）；`DiffPane` 视图。
+- Produces: `DiffDocumentBuilder` 枚举，静态方法 `build(_ diff: FileDiff) -> NSAttributedString`；`DiffTextView` 结构体（`NSViewRepresentable`，`init(document: NSAttributedString)`）；`DiffPane` 视图。
 
-**说明：** v1 只实现 `.unified`。`.split` 是计划二的内容，但 `DiffLayout` 参数现在就加上，避免之后改签名。文本文档按"一个长文档"的模型构建，为计划二的连续滚动模式留好路。
+**说明：** v1 只做统一视图。分栏视图是计划二的内容，届时再加参数——Swift 的 switch 穷尽检查会把所有需要改的地方报出来，现在预留没有收益。文本文档按"一个长文档"的模型构建，为计划二的连续滚动模式留好路。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -3700,7 +3700,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
             DiffLine(kind: .deletion, oldLineNumber: 2, newLineNumber: nil, text: "gone"),
             DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 2, text: "fresh"),
         ])
-        let document = DiffDocumentBuilder.build(diff, layout: .unified)
+        let document = DiffDocumentBuilder.build(diff)
         let text = document.string
         XCTAssertTrue(text.contains("keep"))
         XCTAssertTrue(text.contains("gone"))
@@ -3711,7 +3711,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
         let diff = makeDiff([
             DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
         ])
-        XCTAssertTrue(DiffDocumentBuilder.build(diff, layout: .unified).string
+        XCTAssertTrue(DiffDocumentBuilder.build(diff).string
             .contains("func example()"))
     }
 
@@ -3719,7 +3719,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
         let diff = makeDiff([
             DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 1, text: "fresh"),
         ])
-        let document = DiffDocumentBuilder.build(diff, layout: .unified)
+        let document = DiffDocumentBuilder.build(diff)
         let range = (document.string as NSString).range(of: "fresh")
         let attributes = document.attributes(at: range.location, effectiveRange: nil)
         XCTAssertNotNil(attributes[.backgroundColor], "新增行必须有背景色")
@@ -3729,7 +3729,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
         let diff = makeDiff([
             DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
         ])
-        let document = DiffDocumentBuilder.build(diff, layout: .unified)
+        let document = DiffDocumentBuilder.build(diff)
         let font = document.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
         XCTAssertNotNil(font)
         XCTAssertTrue(font!.isFixedPitch, "代码必须用等宽字体")
@@ -3739,14 +3739,14 @@ final class DiffDocumentBuilderTests: XCTestCase {
         let diff = makeDiff([
             DiffLine(kind: .context, oldLineNumber: 42, newLineNumber: 43, text: "keep"),
         ], oldStart: 42, newStart: 43)
-        let text = DiffDocumentBuilder.build(diff, layout: .unified).string
+        let text = DiffDocumentBuilder.build(diff).string
         XCTAssertTrue(text.contains("42"))
         XCTAssertTrue(text.contains("43"))
     }
 
     func testEmptyDiffProducesEmptyDocument() {
         let diff = FileDiff(path: "a.swift", originalPath: nil, content: .empty)
-        XCTAssertEqual(DiffDocumentBuilder.build(diff, layout: .unified).length, 0)
+        XCTAssertEqual(DiffDocumentBuilder.build(diff).length, 0)
     }
 
     /// 性能护栏：大 diff 的文档构建必须够快，不然点开文件那 100ms 预算就爆了。
@@ -3758,7 +3758,7 @@ final class DiffDocumentBuilderTests: XCTestCase {
         }
         let diff = makeDiff(lines)
         let start = ContinuousClock.now
-        _ = DiffDocumentBuilder.build(diff, layout: .unified)
+        _ = DiffDocumentBuilder.build(diff)
         let elapsed = ContinuousClock.now - start
         XCTAssertLessThan(elapsed, .milliseconds(50),
                           "10000 行的文档构建耗时 \(elapsed)，超出预算")
@@ -3785,12 +3785,6 @@ Expected: 编译失败，报 `cannot find 'DiffDocumentBuilder' in scope`。
 import AppKit
 import GitKit
 
-public enum DiffLayout: Sendable {
-    case unified
-    /// 计划二实现。
-    case split
-}
-
 /// 把 FileDiff 转成一个可直接交给 NSTextView 的 NSAttributedString。
 ///
 /// 纯函数，没有 UI 依赖，因此可以完整测试，也可以放到主线程之外去跑。
@@ -3801,7 +3795,7 @@ public enum DiffLayout: Sendable {
 public enum DiffDocumentBuilder {
     private static let gutterWidth = 4
 
-    public static func build(_ diff: FileDiff, layout: DiffLayout) -> NSAttributedString {
+    public static func build(_ diff: FileDiff) -> NSAttributedString {
         guard case .textual(let hunks) = diff.content, !hunks.isEmpty else {
             return NSAttributedString()
         }
@@ -3998,7 +3992,7 @@ struct DiffPane: View {
                             .font(Theme.codeFont)
                     }
                 case .textual:
-                    DiffTextView(document: DiffDocumentBuilder.build(diff, layout: .unified))
+                    DiffTextView(document: DiffDocumentBuilder.build(diff))
                 }
             case .collapsed(let reason, let path):
                 CollapsedFileView(path: path, reason: reason) {
