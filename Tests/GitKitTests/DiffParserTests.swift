@@ -31,6 +31,17 @@ final class DiffParserTests: XCTestCase {
         XCTAssertEqual(added.text, "CHANGED")
         XCTAssertEqual(added.newLineNumber, 2)
         XCTAssertNil(added.oldLineNumber)
+
+        if let last = hunk.lines.last {
+            XCTAssertFalse(last.kind == .context && last.text.isEmpty,
+                           "末尾不应有多余的空上下文行")
+        }
+        let oldSideCount = hunk.lines.count { $0.kind == .context || $0.kind == .deletion }
+        let newSideCount = hunk.lines.count { $0.kind == .context || $0.kind == .addition }
+        XCTAssertEqual(oldSideCount, hunk.oldCount)
+        XCTAssertEqual(newSideCount, hunk.newCount)
+        XCTAssertFalse(hunk.patchText.hasSuffix(" \n"),
+                       "patchText 末尾不应有多余的空上下文行")
     }
 
     func testLineNumbersAreCorrectAcrossHunk() async throws {

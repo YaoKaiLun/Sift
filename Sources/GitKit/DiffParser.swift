@@ -39,7 +39,7 @@ public enum DiffParser {
             currentLines = []
         }
 
-        for line in lines {
+        for (index, line) in lines.enumerated() {
             // hunk 头
             if line.hasPrefix("@@"),
                let match = try? hunkHeaderPattern.wholeMatch(in: String(line)) {
@@ -70,7 +70,9 @@ public enum DiffParser {
 
             // hunk 内部：靠首字符判断类型
             guard let marker = line.first else {
-                // diff 中的空行代表一个空的上下文行。
+                // split 在末尾换行会产生一个空元素，不是 unified diff 的上下文行。
+                if index == lines.count - 1 { continue }
+                // 中间出现的空元素仍视为空上下文行。
                 currentLines.append(DiffLine(kind: .context,
                                              oldLineNumber: oldLineNumber,
                                              newLineNumber: newLineNumber,
