@@ -81,13 +81,9 @@ public final class RepoStore {
         didSet { persist() }
     }
 
-    public var sidebarWidth: Double {
-        didSet { persist() }
-    }
+    public var sidebarWidth: Double
 
-    public var fileListWidth: Double {
-        didSet { persist() }
-    }
+    public var fileListWidth: Double
 
     public var usesContinuousDiff: Bool {
         didSet { persist() }
@@ -512,7 +508,7 @@ public final class RepoStore {
         }
     }
 
-    private func persist() {
+    public func persist() {
         let bookmarks = repositories.compactMap { entry in
             try? entry.root.bookmarkData(options: .withSecurityScope,
                                          includingResourceValuesForKeys: nil,

@@ -17,11 +17,13 @@ public struct ContentView: View {
             if showsSidebar {
                 SourceSidebar()
                     .frame(width: store.sidebarWidth)
-                SplitDivider(width: sidebarWidthBinding, range: 180...340)
+                SplitDivider(width: sidebarWidthBinding, range: 180...340,
+                             onDragEnded: { store.persist() })
             }
             FileListPane(showsSidebar: $showsSidebar)
                 .frame(width: store.fileListWidth)
-            SplitDivider(width: fileListWidthBinding, range: 240...520)
+            SplitDivider(width: fileListWidthBinding, range: 240...520,
+                         onDragEnded: { store.persist() })
             DiffPane()
                 .frame(maxWidth: .infinity)
         }
