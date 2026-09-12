@@ -84,15 +84,17 @@ public struct GitRunner: Sendable {
         let stop = StopFlag()
 
         let output: (Data, Data) = try await withTaskCancellationHandler {
+            // 启动失败时也必须关闭写端，否则 drain 在 readDataToEndOfFile 上永久阻塞。
+            defer {
+                try? stdoutPipe.fileHandleForWriting.close()
+                try? stderrPipe.fileHandleForWriting.close()
+            }
+
             // 先挂上 drain，再 `run()`，避免 git 瞬间写满管道而此时还没人读。
             async let out = drain(stdoutPipe)
             async let err = drain(stderrPipe)
 
             try await launch(box)
-
-            // 父进程丢掉写端，子进程关闭输出时 drain 才能收到 EOF。
-            try? stdoutPipe.fileHandleForWriting.close()
-            try? stderrPipe.fileHandleForWriting.close()
 
             let timeoutTask = Task.detached(priority: .userInitiated) {
                 try await Task.sleep(for: timeout)

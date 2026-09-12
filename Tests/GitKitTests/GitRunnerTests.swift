@@ -75,6 +75,23 @@ final class GitRunnerTests: XCTestCase {
         }
     }
 
+    func testLaunchFailureDoesNotHang() async throws {
+        let bogus = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GitRunnerTests-\(UUID().uuidString)")
+        try Data().write(to: bogus) // 文件而非目录，Process.run() 会失败
+
+        let runner = GitRunner()
+        let start = ContinuousClock.now
+        do {
+            _ = try await runner.run(["status"], in: bogus)
+            XCTFail("expected launchFailed")
+        } catch GitError.launchFailed {
+            XCTAssertLessThan(ContinuousClock.now - start, .seconds(2))
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+    }
+
     func testCancellationThrowsCancellationErrorNotTimeout() async throws {
         let repo = try FixtureRepo()
         let repoURL = repo.url
