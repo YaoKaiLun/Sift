@@ -94,6 +94,15 @@ struct DiffTextView: NSViewRepresentable {
         private var overlay: HunkOverlayView?
         private var buttonStack: NSStackView?
         private var hoveredID: String?
+        private var lastButtonIdentity: ButtonIdentity?
+
+        private struct ButtonIdentity: Equatable {
+            var hoveredID: String
+            var showsStage: Bool
+            var showsUnstage: Bool
+            var showsDiscard: Bool
+            var isEnabled: Bool
+        }
 
         func attach(scrollView: NSScrollView, textView: NSTextView) {
             self.scrollView = scrollView
@@ -126,32 +135,58 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         func mouseMoved(at pointInOverlay: NSPoint) {
-            guard let overlay, let scrollView else { return }
-            let pointInScroll = overlay.convert(pointInOverlay, to: scrollView)
-            let hitID = hunkID(at: pointInScroll)
-            if hitID != hoveredID {
-                hoveredID = hitID
-            }
-            relayoutOverlay()
+            applyHover(at: pointInOverlay)
         }
 
         func mouseExited() {
             hoveredID = nil
-            relayoutOverlay()
+            hideButtonStack()
         }
 
         @objc func relayoutOverlay() {
             overlay?.frame = scrollView?.bounds ?? .zero
             guard let hoveredID, hunkActions != nil else {
-                buttonStack?.isHidden = true
+                hideButtonStack()
                 return
             }
             guard let header = document.hunkHeaders.first(where: { $0.id == hoveredID }),
                   let headerRect = headerRectInScroll(for: header) else {
-                buttonStack?.isHidden = true
+                hideButtonStack()
+                return
+            }
+            if let overlay, let scrollView, let window = overlay.window {
+                let pointInOverlay = overlay.convert(
+                    window.mouseLocationOutsideOfEventStream, from: nil)
+                let pointInScroll = overlay.convert(pointInOverlay, to: scrollView)
+                if !headerHitRect(for: headerRect).contains(pointInScroll) {
+                    self.hoveredID = nil
+                    hideButtonStack()
+                    return
+                }
+            }
+            showButtons(headerRect: headerRect)
+        }
+
+        private func applyHover(at pointInOverlay: NSPoint) {
+            guard let overlay, let scrollView else { return }
+            let pointInScroll = overlay.convert(pointInOverlay, to: scrollView)
+            let hitID = hunkID(at: pointInScroll)
+            if hitID == nil {
+                hoveredID = nil
+                hideButtonStack()
+                return
+            }
+            hoveredID = hitID
+            guard let header = document.hunkHeaders.first(where: { $0.id == hitID }),
+                  let headerRect = headerRectInScroll(for: header) else {
+                hideButtonStack()
                 return
             }
             showButtons(headerRect: headerRect)
+        }
+
+        private func hideButtonStack() {
+            buttonStack?.isHidden = true
         }
 
         @objc func stageClicked() {
@@ -177,16 +212,19 @@ struct DiffTextView: NSViewRepresentable {
             }
             for header in document.hunkHeaders {
                 guard let rect = headerRectInScroll(for: header) else { continue }
-                let hit = NSRect(
-                    x: 0,
-                    y: rect.minY,
-                    width: scrollView?.bounds.width ?? rect.width,
-                    height: max(rect.height, Theme.codeLineHeight))
-                if hit.contains(pointInScroll) {
+                if headerHitRect(for: rect).contains(pointInScroll) {
                     return header.id
                 }
             }
             return nil
+        }
+
+        private func headerHitRect(for headerRect: NSRect) -> NSRect {
+            NSRect(
+                x: 0,
+                y: headerRect.minY,
+                width: scrollView?.bounds.width ?? headerRect.width,
+                height: max(headerRect.height, Theme.codeLineHeight))
         }
 
         private func headerRectInScroll(for header: DiffHunkHeader) -> NSRect? {
@@ -203,13 +241,22 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         private func showButtons(headerRect: NSRect) {
-            guard let overlay, let actions = hunkActions, let scrollView else { return }
+            guard let overlay, let actions = hunkActions, let scrollView, let hoveredID else { return }
             let stack = buttonStack ?? makeButtonStack()
             if buttonStack == nil {
                 overlay.addSubview(stack)
                 buttonStack = stack
             }
-            rebuildButtons(in: stack, actions: actions)
+            let identity = ButtonIdentity(
+                hoveredID: hoveredID,
+                showsStage: actions.showsStage,
+                showsUnstage: actions.showsUnstage,
+                showsDiscard: actions.showsDiscard,
+                isEnabled: actions.isEnabled)
+            if lastButtonIdentity != identity {
+                rebuildButtons(in: stack, actions: actions)
+                lastButtonIdentity = identity
+            }
             stack.isHidden = false
             stack.layoutSubtreeIfNeeded()
             let size = stack.fittingSize
