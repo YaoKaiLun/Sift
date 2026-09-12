@@ -2,6 +2,20 @@ import XCTest
 @testable import GitKit
 
 final class GitRunnerTests: XCTestCase {
+    /// Apple Git 的 `git daemon` 无 `--foreground` / `--port=0`；不传 `--detach` 就会前台挂起。
+    private static func hangingDaemonArguments() -> [String] {
+        [
+            "daemon",
+            "--reuseaddr",
+            "--listen=127.0.0.1",
+            "--port=\(Int.random(in: 20_000...49_000))",
+            "--base-path=.",
+            "--export-all",
+            "--verbose",
+            "--log-destination=stderr",
+        ]
+    }
+
     func testRunReturnsStdout() async throws {
         let repo = try FixtureRepo()
         try repo.write("x\n", to: "a.txt")
@@ -48,15 +62,40 @@ final class GitRunnerTests: XCTestCase {
         XCTAssertGreaterThan(data.count, 2_000_000, "期望输出远超管道缓冲区")
     }
 
-    func testCancellationTerminatesProcess() async throws {
+    func testTimeoutTerminatesHangingProcess() async throws {
         let repo = try FixtureRepo()
-        let runner = GitRunner()
-        let task = Task {
-            // `git wait` 不存在，但这里的重点是任务被取消后不会永远挂着。
-            try await runner.run(["log", "--all"], in: repo.url)
+        let runner = GitRunner(timeout: .milliseconds(200))
+        do {
+            _ = try await runner.run(Self.hangingDaemonArguments(), in: repo.url)
+            XCTFail("期望抛出 timedOut")
+        } catch let error as GitError {
+            guard case .timedOut = error else {
+                return XCTFail("期望 timedOut，实际是 \(error)")
+            }
         }
+    }
+
+    func testCancellationThrowsCancellationErrorNotTimeout() async throws {
+        let repo = try FixtureRepo()
+        let repoURL = repo.url
+        let runner = GitRunner(timeout: .seconds(30))
+        let arguments = Self.hangingDaemonArguments()
+        let task = Task<Data, Error>.detached {
+            try await runner.run(arguments, in: repoURL)
+        }
+        try await Task.sleep(for: .milliseconds(50))
         task.cancel()
-        // 无论抛错还是正常返回都可以，只要它会结束。
-        _ = try? await task.value
+
+        let started = ContinuousClock.now
+        do {
+            _ = try await task.value
+            XCTFail("期望 CancellationError")
+        } catch is CancellationError {
+            // 取消必须报 CancellationError，不能伪装成超时。
+        } catch let error as GitError {
+            XCTFail("取消不应抛 GitError（尤其是 timedOut），实际是 \(error)")
+        }
+        let elapsed = ContinuousClock.now - started
+        XCTAssertLessThan(elapsed, Duration.seconds(2), "取消后应在约 2 秒内返回")
     }
 }
