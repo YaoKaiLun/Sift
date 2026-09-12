@@ -45,6 +45,22 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.requestCount, 0)
     }
 
+    func testNon2xxResponseThrowsWithoutYielding() async {
+        StubURLProtocol.responseStatusCode = 429
+        StubURLProtocol.responseBody = Data("""
+        {"error":{"message":"Rate limit exceeded"}}
+        """.utf8)
+
+        do {
+            _ = try await collect(configuredProvider().stream(Self.sampleRequest))
+            XCTFail("expected ExplainError.httpStatus")
+        } catch ExplainError.httpStatus(429) {
+            // 预期：4xx 以 HTTP 状态错误结束流，不 yield 内容
+        } catch {
+            XCTFail("wrong error: \(error)")
+        }
+    }
+
     func testNonJSONLinesAreSkipped() async throws {
         StubURLProtocol.responseBody = Data("""
         : keep-alive
@@ -109,6 +125,7 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     private final class State: @unchecked Sendable {
         var requests: [URLRequest] = []
         var responseBody = Data()
+        var responseStatusCode = 200
         let lock = NSLock()
     }
 
@@ -127,10 +144,16 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         set { state.lock.withLock { state.responseBody = newValue } }
     }
 
+    static var responseStatusCode: Int {
+        get { state.lock.withLock { state.responseStatusCode } }
+        set { state.lock.withLock { state.responseStatusCode = newValue } }
+    }
+
     static func reset() {
         state.lock.withLock {
             state.requests = []
             state.responseBody = Data()
+            state.responseStatusCode = 200
         }
     }
 
@@ -141,9 +164,10 @@ private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         Self.state.lock.withLock { Self.state.requests.append(request) }
         let body = Self.responseBody
+        let statusCode = Self.state.lock.withLock { Self.state.responseStatusCode }
         let response = HTTPURLResponse(
             url: request.url ?? URL(string: "https://api.example.com/")!,
-            statusCode: 200,
+            statusCode: statusCode,
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)

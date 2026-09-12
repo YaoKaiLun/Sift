@@ -60,7 +60,12 @@ public struct OpenAICompatibleProvider: ExplainProvider {
                 messages: Self.messages(for: request)))
 
         // SSE：只处理 `data: ` 行；`[DONE]` 结束；JSON 缺字段或非 JSON 跳过。
-        let (bytes, _) = try await session.bytes(for: urlRequest)
+        let (bytes, response) = try await session.bytes(for: urlRequest)
+        if let http = response as? HTTPURLResponse,
+           !(200 ... 299).contains(http.statusCode)
+        {
+            throw ExplainError.httpStatus(http.statusCode)
+        }
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard line.hasPrefix("data: ") else { continue }

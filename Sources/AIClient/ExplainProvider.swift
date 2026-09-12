@@ -2,6 +2,7 @@ import Foundation
 
 public enum ExplainError: Error, Sendable, Equatable {
     case notConfigured
+    case httpStatus(Int)
 }
 
 public struct ExplainTurn: Sendable, Equatable {
