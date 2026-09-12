@@ -183,7 +183,7 @@ public final class RepoStore {
 
     // MARK: - 刷新
 
-    public func refreshFileList() async {
+    public func refreshFileList(invalidateAllCachedDiffs: Bool = true) async {
         await refreshWorktreeLists()
         guard let worktree = selectedWorktree else { return }
         fileListTask?.cancel()
@@ -194,7 +194,9 @@ public final class RepoStore {
 
         fileListTask = Task { [weak self] in
             do {
-                await engine.invalidate(worktreePath: worktree.path)
+                if invalidateAllCachedDiffs {
+                    await engine.invalidate(worktreePath: worktree.path)
+                }
                 // status 与 numstat 并发发起——两者互不依赖，串行等待是白白浪费预算。
                 async let statusResult = repository.status()
                 async let statsResult = repository.lineStats()
@@ -319,7 +321,7 @@ public final class RepoStore {
         do {
             try await body(repository)
             await engine.invalidate(worktreePath: worktree.path, filePath: path)
-            await refreshFileList()
+            await refreshFileList(invalidateAllCachedDiffs: false)
         } catch {
             errorMessage = "无法完成操作：\(error)"
         }
