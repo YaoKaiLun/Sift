@@ -9,8 +9,10 @@ struct DiffPane: View {
     @Environment(RepoStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmsDelete = false
+    @State private var filePendingDelete: FileStatus?
     @State private var blameLines: [BlameLine] = []
     @State private var continuousBlame: [String: [BlameLine]] = [:]
+    @State private var blamedWorktreePath = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,12 +27,12 @@ struct DiffPane: View {
         .background(Theme.contentBackground)
         .confirmationDialog("删除未跟踪文件？", isPresented: $confirmsDelete, titleVisibility: .visible) {
             Button("删除", role: .destructive) {
-                if let file = store.selectedFile {
+                if let file = filePendingDelete {
                     Task { await store.deleteUntracked(file: file) }
                 }
             }
         } message: {
-            Text("\(store.selectedFile?.path ?? "")\n此操作无法从 git 恢复。")
+            Text("\(filePendingDelete?.path ?? "")\n此操作无法从 git 恢复。")
         }
         .task(id: store.usesContinuousDiff) {
             await store.handleBrowseModeChange()
@@ -154,7 +156,10 @@ struct DiffPane: View {
         @Bindable var store = store
         HStack(spacing: 8) {
             if store.selectedFile?.isUntracked == true {
-                Button("删除文件") { confirmsDelete = true }
+                Button("删除文件") {
+                    filePendingDelete = store.selectedFile
+                    confirmsDelete = true
+                }
                     .controlSize(.small)
                     .disabled(store.isMutating)
             }
@@ -358,8 +363,11 @@ struct DiffPane: View {
         if !store.showsBlame { return "off" }
         let worktree = store.selectedWorktree?.path.path ?? ""
         if store.usesContinuousDiff {
-            let ids = store.continuousLoaded.keys.sorted().joined(separator: ",")
-            return "c:\(store.diffEpoch):\(worktree)|\(ids)"
+            let ids = store.continuousLoaded.compactMap { id, loaded -> String? in
+                if case .ready = loaded { return id }
+                return nil
+            }.sorted().joined(separator: ",")
+            return "c:\(worktree)|\(ids)"
         }
         return "s:\(store.diffEpoch):\(worktree)|\(store.selectedFile?.path ?? "")|\(store.selectedFileIsStaged)"
     }
@@ -387,20 +395,28 @@ struct DiffPane: View {
             return
         }
         let repo = GitRepository(root: worktree.path)
+        if blamedWorktreePath != worktree.path.path {
+            blameLines = []
+            continuousBlame = [:]
+            blamedWorktreePath = worktree.path.path
+        }
         if store.usesContinuousDiff {
-            var next: [String: [BlameLine]] = [:]
+            blameLines = []
+            let loadedIDs = Set(store.continuousLoaded.keys)
+            continuousBlame = continuousBlame.filter { loadedIDs.contains($0.key) }
             for (id, loaded) in store.continuousLoaded {
                 if Task.isCancelled { return }
                 guard case .ready = loaded,
                       let entry = store.continuousPlan.first(where: { $0.id == id }),
                       !entry.status.isUntracked else {
+                    continuousBlame.removeValue(forKey: id)
                     continue
                 }
-                next[id] = await repo.blame(path: entry.status.path, staged: entry.staged)
+                if continuousBlame[id] != nil { continue }
+                let lines = await repo.blame(path: entry.status.path, staged: entry.staged)
+                guard !Task.isCancelled else { return }
+                continuousBlame[id] = lines
             }
-            guard !Task.isCancelled else { return }
-            continuousBlame = next
-            blameLines = []
             return
         }
         continuousBlame = [:]
@@ -408,6 +424,7 @@ struct DiffPane: View {
             blameLines = []
             return
         }
+        blameLines = []
         let lines = await repo.blame(path: file.path, staged: store.selectedFileIsStaged)
         guard !Task.isCancelled else { return }
         blameLines = lines

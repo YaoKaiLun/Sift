@@ -3,7 +3,7 @@ import os
 import Security
 
 public protocol KeychainStore: Sendable {
-    func get(_ account: String) -> String?
+    func get(_ account: String) throws -> String?
     func set(_ value: String, account: String) throws
     func delete(_ account: String) throws
 }
@@ -18,7 +18,7 @@ public struct MemoryKeychain: KeychainStore {
 
     public init() {}
 
-    public func get(_ account: String) -> String? {
+    public func get(_ account: String) throws -> String? {
         storage.withLock { $0[account] }
     }
 
@@ -40,7 +40,7 @@ public struct SystemKeychain: KeychainStore {
         self.serviceName = service
     }
 
-    public func get(_ account: String) -> String? {
+    public func get(_ account: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
@@ -50,8 +50,14 @@ public struct SystemKeychain: KeychainStore {
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else {
+            throw KeychainError.unexpectedStatus(status)
+        }
+        guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
+            throw KeychainError.unexpectedStatus(errSecDecode)
+        }
+        return value
     }
 
     public func set(_ value: String, account: String) throws {

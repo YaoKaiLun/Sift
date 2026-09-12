@@ -127,11 +127,7 @@ public struct GitRunner: Sendable {
             // 写完后关闭写端让 git 看到 EOF；否则大 patch 会堵满 64KB 管道。
             async let out = drain(stdoutPipe)
             async let err = drain(stderrPipe)
-            async let written: Void = {
-                guard let stdin, let stdinPipe else { return }
-                stdinPipe.fileHandleForWriting.write(stdin)
-                try? stdinPipe.fileHandleForWriting.close()
-            }()
+            async let written: Void = writeStdin(stdin, to: stdinPipe)
 
             try await launch(box)
 
@@ -224,6 +220,26 @@ public struct GitRunner: Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 continuation.resume(returning: data)
+            }
+        }
+    }
+
+    /// 在后台队列上写 stdin。必须用会抛错的 `write(contentsOf:)`，并关掉 SIGPIPE：
+    /// `FileHandle.write(_:)` 在 EPIPE 时抛 NSException；未设 `F_SETNOSIGPIPE` 时
+    /// 内核会直接 SIGPIPE 把进程打崩。
+    private static func writeStdin(_ data: Data?, to pipe: Pipe?) async {
+        guard let data, let pipe else { return }
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let handle = pipe.fileHandleForWriting
+                _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
+                do {
+                    try handle.write(contentsOf: data)
+                    try handle.close()
+                } catch {
+                    try? handle.close()
+                }
+                continuation.resume()
             }
         }
     }

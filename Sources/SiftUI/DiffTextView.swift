@@ -101,6 +101,7 @@ struct DiffTextView: NSViewRepresentable {
         private weak var rightScrollView: NSScrollView?
         private weak var rightTextView: NSTextView?
         private var overlay: HunkOverlayView?
+        private var rightExplainOverlay: NSView?
         private var blameOverlay: BlameOverlayView?
         private var buttonStack: NSStackView?
         private var explainButton: NSButton?
@@ -201,6 +202,7 @@ struct DiffTextView: NSViewRepresentable {
             NotificationCenter.default.removeObserver(self)
             container?.subviews.forEach { $0.removeFromSuperview() }
             overlay = nil
+            rightExplainOverlay = nil
             blameOverlay = nil
             buttonStack = nil
             explainButton = nil
@@ -233,6 +235,7 @@ struct DiffTextView: NSViewRepresentable {
                 container.addSubview(splitView)
 
                 attachOverlay(to: leftScroll)
+                attachExplainOverlay(to: rightScroll)
                 attachBlameOverlay(to: rightScroll)
                 observeScroll(leftScroll)
                 observeScroll(rightScroll)
@@ -293,6 +296,14 @@ struct DiffTextView: NSViewRepresentable {
             overlay.coordinator = self
             scrollView.addSubview(overlay, positioned: .above, relativeTo: nil)
             self.overlay = overlay
+        }
+
+        private func attachExplainOverlay(to scrollView: NSScrollView) {
+            let overlay = PassthroughOverlayView()
+            overlay.autoresizingMask = [.width, .height]
+            overlay.frame = scrollView.bounds
+            scrollView.addSubview(overlay, positioned: .above, relativeTo: nil)
+            rightExplainOverlay = overlay
         }
 
         private func attachBlameOverlay(to scrollView: NSScrollView) {
@@ -437,6 +448,7 @@ struct DiffTextView: NSViewRepresentable {
             overlay?.frame = scrollView?.bounds ?? .zero
             if isSplit {
                 blameOverlay?.frame = rightScrollView?.bounds ?? .zero
+                rightExplainOverlay?.frame = rightScrollView?.bounds ?? .zero
             } else {
                 blameOverlay?.frame = scrollView?.bounds ?? .zero
             }
@@ -721,32 +733,40 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         private func updateExplainButton() {
-            guard let overlay,
-                  let textView = selectionTextView ?? self.textView,
+            guard let textView = selectionTextView ?? self.textView,
                   textView.selectedRange().length > 0,
-                  let rect = selectionRectInOverlay(range: textView.selectedRange(), textView: textView)
+                  let host = explainHost(for: textView),
+                  let rect = selectionRect(range: textView.selectedRange(), textView: textView, in: host)
             else {
                 explainButton?.isHidden = true
                 return
             }
             let button = explainButton ?? makeExplainButton()
-            if explainButton == nil {
-                overlay.addSubview(button)
+            if button.superview !== host {
+                button.removeFromSuperview()
+                host.addSubview(button, positioned: .above, relativeTo: nil)
                 explainButton = button
             }
             button.isHidden = false
             button.sizeToFit()
             let size = button.fittingSize
             let padding: CGFloat = 4
-            var x = min(rect.maxX + padding, overlay.bounds.width - size.width - 8)
+            var x = min(rect.maxX + padding, host.bounds.width - size.width - 8)
             x = max(8, x)
             let y: CGFloat
-            if overlay.isFlipped {
-                y = min(rect.maxY + padding, max(8, overlay.bounds.height - size.height - 8))
+            if host.isFlipped {
+                y = min(rect.maxY + padding, max(8, host.bounds.height - size.height - 8))
             } else {
                 y = max(8, rect.minY - size.height - padding)
             }
             button.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+        }
+
+        private func explainHost(for textView: NSTextView) -> NSView? {
+            if textView === rightTextView {
+                return rightExplainOverlay ?? rightScrollView
+            }
+            return overlay ?? scrollView
         }
 
         private func makeExplainButton() -> NSButton {
@@ -758,16 +778,15 @@ struct DiffTextView: NSViewRepresentable {
             return button
         }
 
-        private func selectionRectInOverlay(range: NSRange, textView: NSTextView) -> NSRect? {
-            guard let overlay,
-                  let layoutManager = textView.layoutManager,
+        private func selectionRect(range: NSRange, textView: NSTextView, in host: NSView) -> NSRect? {
+            guard let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer else { return nil }
             let glyphRange = layoutManager.glyphRange(
                 forCharacterRange: range, actualCharacterRange: nil)
             var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
             rect.origin.x += textView.textContainerOrigin.x
             rect.origin.y += textView.textContainerOrigin.y
-            return overlay.convert(rect, from: textView)
+            return host.convert(rect, from: textView)
         }
 
         func blameHit(at pointInOverlay: NSPoint) -> BlameLine? {
@@ -898,6 +917,21 @@ struct DiffTextView: NSViewRepresentable {
             blamePopover = popover
             popover.show(relativeTo: rect, of: overlay, preferredEdge: .maxX)
         }
+    }
+}
+
+/// 分栏右栏：只承载「解释这段」，不处理 hunk hover。
+private final class PassthroughOverlayView: NSView {
+    override var isFlipped: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        for subview in subviews where !subview.isHidden && subview.frame.contains(local) {
+            if let hit = subview.hitTest(local) {
+                return hit
+            }
+        }
+        return nil
     }
 }
 

@@ -81,12 +81,18 @@ public struct GitRepository: Sendable {
             arguments, in: root, stdin: Data(patch.utf8), optionalLocks: false)
     }
 
-    /// 删除未跟踪文件。不调 git，路径必须解析后仍在仓库根目录下。
+    /// 删除未跟踪文件。路径必须在仓库内且 git status 确认为未跟踪；已跟踪路径绝不 `removeItem`。
     public func deleteUntracked(path: String) async throws {
         let target = root.appendingPathComponent(path).standardizedFileURL
         let rootStd = root.standardizedFileURL
         guard target.path.hasPrefix(rootStd.path + "/") || target == rootStd else {
             throw GitError.launchFailed("拒绝删除仓库外的路径：\(path)")
+        }
+        let data = try await runner.run(
+            ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--", path], in: root)
+        let statuses = try StatusParser.parse(data)
+        guard statuses.contains(where: { $0.path == path && $0.isUntracked }) else {
+            throw GitError.launchFailed("拒绝删除已跟踪文件：\(path)")
         }
         try FileManager.default.removeItem(at: target)
     }

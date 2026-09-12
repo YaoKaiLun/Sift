@@ -153,4 +153,31 @@ final class GitRunnerTests: XCTestCase {
             ["diff", "--cached", "--name-only"], in: repo.url)
         XCTAssertTrue(String(decoding: staged, as: UTF8.self).contains("a.txt"))
     }
+
+    /// git status 不读 stdin。写满管道后进程关掉写端，FileHandle.write 会因 EPIPE 崩进程。
+    func testStdinWriteDoesNotCrashWhenGitClosesPipe() async throws {
+        let repo = try FixtureRepo()
+        let runner = GitRunner()
+        let payload = Data(repeating: 0x61, count: 256 * 1024)
+        let output = try await runner.runAllowingFailure(
+            ["status", "--porcelain"], in: repo.url, stdin: payload)
+        XCTAssertEqual(output.exitCode, 0)
+    }
+
+    func testFailedApplyWithClosedStdinDoesNotCrash() async throws {
+        let repo = try FixtureRepo()
+        try repo.write("a\n", to: "a.txt")
+        try repo.commit("initial")
+        let runner = GitRunner()
+        let junk = Data("not a patch\n".utf8) + Data(repeating: 0x41, count: 200_000)
+        do {
+            _ = try await runner.run(
+                ["apply", "--cached"], in: repo.url, stdin: junk, optionalLocks: false)
+            XCTFail("期望 nonZeroExit")
+        } catch let error as GitError {
+            guard case .nonZeroExit = error else {
+                return XCTFail("期望 nonZeroExit，实际是 \(error)")
+            }
+        }
+    }
 }

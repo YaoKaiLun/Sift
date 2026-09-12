@@ -1,5 +1,7 @@
 import XCTest
+import AIClient
 import GitKit
+import Security
 @testable import RepoStore
 
 @MainActor
@@ -31,10 +33,12 @@ final class RepoStoreTests: XCTestCase {
         try contents.write(to: url.appendingPathComponent(path), atomically: true, encoding: .utf8)
     }
 
-    private func makeStore() -> RepoStore {
+    private func makeStore(keychain: any KeychainStore = MemoryKeychain()) -> RepoStore {
         let stateURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("sift-state-\(UUID().uuidString)/state.json")
-        return RepoStore(stateStore: PersistedStateStore(fileURL: stateURL))
+        return RepoStore(
+            stateStore: PersistedStateStore(fileURL: stateURL),
+            keychain: keychain)
     }
 
     func testRefreshReloadsSelectedDiff() async throws {
@@ -317,5 +321,43 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertTrue(store.continuousLoaded.isEmpty,
                       "全量失效必须在 cancel/spawn 之前丢掉连续滚动缓存")
         await fullRefresh.value
+    }
+
+    func testInitDoesNotDeleteAPIKeyWhenKeychainGetFails() {
+        let keychain = RecordingKeychain()
+        keychain.values["api-key"] = "sk-secret"
+        keychain.getError = KeychainError.unexpectedStatus(errSecAuthFailed)
+        _ = makeStore(keychain: keychain)
+        XCTAssertTrue(keychain.deleted.isEmpty, "读取失败不得删除 Keychain 中的密钥")
+        XCTAssertEqual(keychain.values["api-key"], "sk-secret")
+    }
+
+    func testClearingAPIKeyAfterInitDeletesKeychainItem() {
+        let keychain = RecordingKeychain()
+        keychain.values["api-key"] = "sk-secret"
+        let store = makeStore(keychain: keychain)
+        XCTAssertEqual(store.explainAPIKey, "sk-secret")
+        store.explainAPIKey = ""
+        XCTAssertEqual(keychain.deleted, ["api-key"])
+    }
+}
+
+private final class RecordingKeychain: KeychainStore, @unchecked Sendable {
+    var values: [String: String] = [:]
+    var deleted: [String] = []
+    var getError: Error?
+
+    func get(_ account: String) throws -> String? {
+        if let getError { throw getError }
+        return values[account]
+    }
+
+    func set(_ value: String, account: String) throws {
+        values[account] = value
+    }
+
+    func delete(_ account: String) throws {
+        deleted.append(account)
+        values.removeValue(forKey: account)
     }
 }

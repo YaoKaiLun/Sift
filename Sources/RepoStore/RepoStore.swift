@@ -120,7 +120,10 @@ public final class RepoStore {
 
     /// 只走 Keychain，不写 state.json。
     public var explainAPIKey: String {
-        didSet { saveExplainAPIKey() }
+        didSet {
+            guard writesExplainAPIKey else { return }
+            saveExplainAPIKey()
+        }
     }
 
     public var showsExplainPanel = false
@@ -143,6 +146,8 @@ public final class RepoStore {
     private let stateStore: PersistedStateStore
     private let keychain: KeychainStore
     private var watcher: FileSystemWatcher?
+    /// init 读 Keychain 时关掉写入，避免 get 失败被当成空密钥而 delete。
+    private var writesExplainAPIKey = false
 
     /// 在途任务句柄。切换选择时取消旧任务——这是"切换即取消"约束的落点。
     private var fileListTask: Task<Void, Never>?
@@ -171,7 +176,12 @@ public final class RepoStore {
         self.fileListWidth = loaded.fileListWidth
         self.usesContinuousDiff = loaded.usesContinuousDiff
         self.showsBlame = loaded.showsBlame
-        self.explainAPIKey = keychain.get("api-key") ?? ""
+        do {
+            self.explainAPIKey = try keychain.get("api-key") ?? ""
+        } catch {
+            self.explainAPIKey = ""
+        }
+        self.writesExplainAPIKey = true
     }
 
     // MARK: - 仓库管理
@@ -520,6 +530,10 @@ public final class RepoStore {
     }
 
     public func deleteUntracked(file: FileStatus) async {
+        guard file.isUntracked else {
+            errorMessage = "无法删除已跟踪文件：\(file.path)"
+            return
+        }
         await mutate(path: file.path) { try await $0.deleteUntracked(path: file.path) }
     }
 

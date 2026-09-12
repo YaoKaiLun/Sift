@@ -77,11 +77,16 @@ final class OpenAICompatibleProviderTests: XCTestCase {
 
     func testMemoryKeychainRoundTrip() throws {
         let store = MemoryKeychain()
-        XCTAssertNil(store.get("api-key"))
+        XCTAssertNil(try store.get("api-key"))
         try store.set("sk-test", account: "api-key")
-        XCTAssertEqual(store.get("api-key"), "sk-test")
+        XCTAssertEqual(try store.get("api-key"), "sk-test")
         try store.delete("api-key")
-        XCTAssertNil(store.get("api-key"))
+        XCTAssertNil(try store.get("api-key"))
+    }
+
+    func testSystemKeychainMissingItemIsNilNotError() throws {
+        let store = SystemKeychain(service: "app.sift.test.\(UUID().uuidString)")
+        XCTAssertNil(try store.get("missing-account"))
     }
 
     private func configuredProvider() -> OpenAICompatibleProvider {
