@@ -39,17 +39,18 @@ public struct GitRepository: Sendable {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// 一次性拿到所有已跟踪文件的 +/− 行数，供文件列表展示。
+    /// 一次性拿到暂存区与工作区各自的 +/− 行数，供文件列表按分组展示。
     ///
-    /// 两次 numstat 调用（暂存区与工作区）比逐文件算 diff 便宜得多，
+    /// 两次 numstat 调用比逐文件算 diff 便宜得多，
     /// 这正是"文件列表要在 150ms 内出来"的做法——列表只需要数字，不需要内容。
     /// 未跟踪文件不在 numstat 输出里，列表中不显示行数。
-    public func lineStats() async throws -> [String: LineStats] {
+    /// 两侧分开返回，避免同一路径在已暂存/未暂存两行上显示合并后的数字。
+    public func lineStats() async throws -> (staged: [String: LineStats], unstaged: [String: LineStats]) {
         async let stagedData = runner.run(["diff", "--numstat", "-z", "--cached"], in: root)
         async let unstagedData = runner.run(["diff", "--numstat", "-z"], in: root)
         let staged = NumstatParser.parse(try await stagedData)
         let unstaged = NumstatParser.parse(try await unstagedData)
-        return staged.merging(unstaged) { $0.merging($1) }
+        return (staged, unstaged)
     }
 
     /// 从任意路径向上查找仓库根目录。用户通过选择目录添加仓库时使用。

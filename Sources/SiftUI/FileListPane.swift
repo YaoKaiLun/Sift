@@ -40,12 +40,14 @@ struct FileListPane: View {
                 if store.usesTreeView {
                     let nodes = FileTreeBuilder.build(
                         from: statuses, collapsingSingleChildDirectories: true)
-                    ForEach(nodes) { node in
-                        FileTreeNodeView(node: node, staged: staged)
+                    ForEach(nodes.map { (id: treeIdentity($0, staged: staged), node: $0) },
+                            id: \.id) { item in
+                        FileTreeNodeView(node: item.node, staged: staged)
                     }
                 } else {
-                    ForEach(statuses) { status in
-                        FileRowView(status: status, staged: staged, showsFullPath: true)
+                    ForEach(statuses.map { (id: fileIdentity($0, staged: staged), status: $0) },
+                            id: \.id) { item in
+                        FileRowView(status: item.status, staged: staged, showsFullPath: true)
                     }
                 }
             }
@@ -64,8 +66,9 @@ private struct FileTreeNodeView: View {
             FileRowView(status: status, staged: staged, showsFullPath: false)
         case .directory(let name, _, let children):
             DisclosureGroup {
-                ForEach(children) { child in
-                    FileTreeNodeView(node: child, staged: staged)
+                ForEach(children.map { (id: treeIdentity($0, staged: staged), node: $0) },
+                        id: \.id) { item in
+                    FileTreeNodeView(node: item.node, staged: staged)
                 }
             } label: {
                 Label(name, systemImage: "folder")
@@ -91,7 +94,7 @@ private struct FileRowView: View {
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer(minLength: 8)
-            if let stats = store.lineStats[status.path] {
+            if let stats = (staged ? store.stagedLineStats : store.unstagedLineStats)[status.path] {
                 LineStatsBadge(stats: stats)
             }
         }
@@ -160,5 +163,18 @@ private struct StatusBadge: View {
         case .unmerged: .orange
         default: .accentColor
         }
+    }
+}
+
+/// 同一路径可以同时出现在已暂存和未暂存两组，List 身份必须带上 staged。
+private func fileIdentity(_ status: FileStatus, staged: Bool) -> String {
+    "\(staged ? "s" : "u"):\(status.path)"
+}
+
+private func treeIdentity(_ node: FileTreeNode, staged: Bool) -> String {
+    let prefix = staged ? "s" : "u"
+    switch node {
+    case .directory(_, let path, _): return "\(prefix):dir:\(path)"
+    case .file(let status): return "\(prefix):file:\(status.path)"
     }
 }

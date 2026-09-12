@@ -131,4 +131,36 @@ final class DiffEngineTests: XCTestCase {
             worktreePath: url, filePath: "a.txt", staged: false))
         XCTAssertNotNil(cached, "首次加载后应写入缓存")
     }
+
+    /// 超过 500KB 的未跟踪文件必须在读内容之前折叠，不能把整份文件拉进内存。
+    func testLargeUntrackedFileCollapsesWithoutReading() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("seed\n", to: "seed.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+
+        let huge = url.appendingPathComponent("huge.txt")
+        try Data(repeating: UInt8(ascii: "x"), count: 600_000).write(to: huge)
+
+        let repository = GitRepository(root: url)
+        let engine = DiffEngine()
+        let status = try await repository.status()
+        let untracked = try XCTUnwrap(status.first { $0.isUntracked })
+
+        let start = ContinuousClock.now
+        let loaded = try await engine.load(status: untracked, staged: false, from: repository)
+        let elapsed = ContinuousClock.now - start
+
+        guard case .collapsed(let reason, let path) = loaded else {
+            return XCTFail("期望 collapsed，实际是 \(loaded)")
+        }
+        XCTAssertEqual(path, "huge.txt")
+        guard case .tooLarge(let bytes) = reason else {
+            return XCTFail("期望 tooLarge，实际是 \(reason)")
+        }
+        XCTAssertGreaterThan(bytes, 500_000)
+        XCTAssertLessThan(elapsed, .milliseconds(50),
+                          "折叠不应读取 600KB 文件，耗时 \(elapsed)")
+    }
 }

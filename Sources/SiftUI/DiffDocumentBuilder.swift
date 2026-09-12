@@ -37,6 +37,15 @@ public enum DiffDocumentBuilder {
         return document
     }
 
+    /// 把大文档的构建挪出主线程。NSAttributedString 不是 Sendable，
+    /// 用盒子跨隔离域交回调用方。
+    public static func buildOffMainActor(_ diff: FileDiff) async -> NSAttributedString {
+        let box = await Task.detached(priority: .userInitiated) {
+            AttributedStringBox(build(diff))
+        }.value
+        return box.value
+    }
+
     private static func headerLine(for hunk: Hunk,
                                    paragraph: NSParagraphStyle,
                                    font: NSFont) -> NSAttributedString {
@@ -117,4 +126,9 @@ public enum DiffDocumentBuilder {
             }
         }
     }
+}
+
+private struct AttributedStringBox: @unchecked Sendable {
+    let value: NSAttributedString
+    init(_ value: NSAttributedString) { self.value = value }
 }

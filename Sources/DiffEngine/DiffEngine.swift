@@ -53,6 +53,14 @@ public actor DiffEngine {
 
         let diff: FileDiff
         if status.isUntracked {
+            if !ignoringCollapse,
+               let size = fileSize(path: status.path, in: repository),
+               let reason = detector.reason(forPath: status.path,
+                                              lineCount: nil, byteCount: size) {
+                let result = LoadedDiff.collapsed(reason: reason, path: status.path)
+                await cache.insert(result, for: key)
+                return result
+            }
             diff = try await untrackedDiff(status: status, repository: repository,
                                            ignoringCollapse: ignoringCollapse)
         } else {
@@ -63,7 +71,8 @@ public actor DiffEngine {
         if !ignoringCollapse {
             let lineCount = diff.hunks.reduce(0) { $0 + $1.lines.count }
             if let reason = detector.reason(forPath: status.path,
-                                            lineCount: lineCount, byteCount: nil) {
+                                            lineCount: lineCount,
+                                            byteCount: diff.estimatedByteCount) {
                 let result = LoadedDiff.collapsed(reason: reason, path: status.path)
                 await cache.insert(result, for: key)
                 return result
@@ -93,6 +102,14 @@ public actor DiffEngine {
                         sectionHeading: "", lines: diffLines)
         return FileDiff(path: status.path, originalPath: nil,
                         content: diffLines.isEmpty ? .empty : .textual([hunk]))
+    }
+
+    /// 读内容之前先看文件大小，避免把超大未跟踪文件整份拉进内存。
+    private func fileSize(path: String, in repository: GitRepository) -> Int? {
+        let url = repository.root.appendingPathComponent(path)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber else { return nil }
+        return size.intValue
     }
 
     private func isCollapsed(_ diff: LoadedDiff) -> Bool {

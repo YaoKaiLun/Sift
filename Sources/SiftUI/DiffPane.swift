@@ -29,7 +29,11 @@ struct DiffPane: View {
                             .font(Theme.codeFont)
                     }
                 case .textual:
-                    DiffTextView(document: DiffDocumentBuilder.build(diff))
+                    if let document = store.diffDocument {
+                        DiffTextView(document: document)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
                 }
             case .collapsed(let reason, let path):
                 CollapsedFileView(path: path, reason: reason) {
@@ -39,6 +43,23 @@ struct DiffPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(store.selectedFile?.path ?? "")
+        .task(id: store.diffEpoch) {
+            await buildDocumentIfNeeded()
+        }
+    }
+
+    @MainActor
+    private func buildDocumentIfNeeded() async {
+        let epoch = store.diffEpoch
+        guard case .ready(let diff) = store.loadedDiff,
+              case .textual = diff.content else { return }
+        let file = store.selectedFile
+        let staged = store.selectedFileIsStaged
+        let built = await DiffDocumentBuilder.buildOffMainActor(diff)
+        guard store.diffEpoch == epoch,
+              store.selectedFile == file,
+              store.selectedFileIsStaged == staged else { return }
+        store.updateDiffDocument(built, epoch: epoch)
     }
 }
 

@@ -73,12 +73,13 @@ final class GitRepositoryTests: XCTestCase {
         try fixture.write("a\nB CHANGED\nc\nd\ne\n", to: "a.txt")
 
         let stats = try await GitRepository(root: fixture.url).lineStats()
-        let entry = try XCTUnwrap(stats["a.txt"])
+        let entry = try XCTUnwrap(stats.unstaged["a.txt"])
         XCTAssertEqual(entry.added, 3)
         XCTAssertEqual(entry.deleted, 1)
+        XCTAssertNil(stats.staged["a.txt"])
     }
 
-    func testLineStatsMergesStagedAndUnstaged() async throws {
+    func testLineStatsSeparatesStagedAndUnstaged() async throws {
         let fixture = try FixtureRepo()
         try fixture.write("a\n", to: "staged.txt")
         try fixture.write("a\n", to: "unstaged.txt")
@@ -88,8 +89,23 @@ final class GitRepositoryTests: XCTestCase {
         try fixture.write("a\nunstaged addition\n", to: "unstaged.txt")
 
         let stats = try await GitRepository(root: fixture.url).lineStats()
-        XCTAssertEqual(stats["staged.txt"]?.added, 1, "已暂存的改动也要计入")
-        XCTAssertEqual(stats["unstaged.txt"]?.added, 1)
+        XCTAssertEqual(stats.staged["staged.txt"]?.added, 1, "已暂存的改动应出现在 staged 映射")
+        XCTAssertNil(stats.unstaged["staged.txt"], "已全部暂存的文件不应出现在 unstaged")
+        XCTAssertEqual(stats.unstaged["unstaged.txt"]?.added, 1)
+        XCTAssertNil(stats.staged["unstaged.txt"])
+    }
+
+    func testLineStatsDoesNotMergeBothSidesOfSameFile() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write("a\n", to: "both.txt")
+        try fixture.commit("initial")
+        try fixture.write("a\nstaged line\n", to: "both.txt")
+        try fixture.git("add", "both.txt")
+        try fixture.write("a\nstaged line\nunstaged line\n", to: "both.txt")
+
+        let stats = try await GitRepository(root: fixture.url).lineStats()
+        XCTAssertEqual(stats.staged["both.txt"]?.added, 1)
+        XCTAssertEqual(stats.unstaged["both.txt"]?.added, 1)
     }
 
     func testLineStatsMarksBinaryFiles() async throws {
@@ -100,7 +116,7 @@ final class GitRepositoryTests: XCTestCase {
             .write(to: fixture.url.appendingPathComponent("img.bin"))
 
         let stats = try await GitRepository(root: fixture.url).lineStats()
-        XCTAssertTrue(stats["img.bin"]?.isBinary ?? false)
+        XCTAssertTrue(stats.unstaged["img.bin"]?.isBinary ?? false)
     }
 
     /// -z 模式下重命名记录的路径字段为空，后面跟两个独立的 NUL 字段。
@@ -114,7 +130,7 @@ final class GitRepositoryTests: XCTestCase {
         try fixture.write("other changed\n", to: "zzz.txt")
 
         let stats = try await GitRepository(root: fixture.url).lineStats()
-        XCTAssertNotNil(stats["new.txt"], "重命名后的新路径应有统计")
-        XCTAssertNotNil(stats["zzz.txt"], "重命名记录之后的文件不应被吞掉")
+        XCTAssertNotNil(stats.staged["new.txt"], "git mv 后的新路径应出现在暂存区统计")
+        XCTAssertNotNil(stats.unstaged["zzz.txt"], "重命名记录之后的文件不应被吞掉")
     }
 }

@@ -66,6 +66,17 @@ final class DiffDocumentBuilderTests: XCTestCase {
         XCTAssertEqual(DiffDocumentBuilder.build(diff).length, 0)
     }
 
+    func testBuildOffMainActorMatchesBuild() async {
+        let diff = makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
+            DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 2, text: "fresh"),
+        ])
+        let onThread = DiffDocumentBuilder.build(diff)
+        let offMain = await DiffDocumentBuilder.buildOffMainActor(diff)
+        XCTAssertEqual(onThread.string, offMain.string)
+        XCTAssertEqual(onThread.length, offMain.length)
+    }
+
     /// 性能护栏：大 diff 的文档构建必须够快，不然点开文件那 100ms 预算就爆了。
     func testBuildsLargeDocumentQuickly() {
         let lines = (0..<10_000).map { index in

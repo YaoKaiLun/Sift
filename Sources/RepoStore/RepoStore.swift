@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import GitKit
@@ -18,11 +19,17 @@ public final class RepoStore {
     public private(set) var repositories: [RepositoryEntry] = []
     public private(set) var selectedWorktree: Worktree?
     public private(set) var fileStatuses: [FileStatus] = []
-    /// 文件路径到 +/− 行数的映射。未跟踪文件不在其中。
-    public private(set) var lineStats: [String: LineStats] = [:]
+    /// 暂存区一侧的 +/−，只给「已暂存」分组用。
+    public private(set) var stagedLineStats: [String: LineStats] = [:]
+    /// 工作区一侧的 +/−，只给「未暂存」分组用。
+    public private(set) var unstagedLineStats: [String: LineStats] = [:]
     public private(set) var selectedFile: FileStatus?
     public private(set) var selectedFileIsStaged = false
     public private(set) var loadedDiff: LoadedDiff?
+    /// 已在后台构建好的 attributed string。DiffPane.body 只负责交给 DiffTextView。
+    public private(set) var diffDocument: NSAttributedString?
+    /// DiffPane 用它触发后台构建；每次 `loadedDiff` 变化都递增。
+    public private(set) var diffEpoch = 0
     public private(set) var isLoadingFileList = false
     public var errorMessage: String?
 
@@ -67,8 +74,10 @@ public final class RepoStore {
            !repositories.contains(where: { $0.worktrees.contains(selected) }) {
             selectedWorktree = nil
             fileStatuses = []
+            stagedLineStats = [:]
+            unstagedLineStats = [:]
             selectedFile = nil
-            loadedDiff = nil
+            setLoadedDiff(nil)
             watcher = nil
         }
         persist()
@@ -84,8 +93,10 @@ public final class RepoStore {
 
         selectedWorktree = worktree
         selectedFile = nil
-        loadedDiff = nil
+        setLoadedDiff(nil)
         fileStatuses = []
+        stagedLineStats = [:]
+        unstagedLineStats = [:]
         persist()
 
         startWatching(worktree)
@@ -96,7 +107,7 @@ public final class RepoStore {
         diffTask?.cancel()
         selectedFile = file
         selectedFileIsStaged = staged
-        loadedDiff = nil
+        setLoadedDiff(nil)
 
         guard let worktree = selectedWorktree else { return }
         let repository = GitRepository(root: worktree.path)
@@ -107,8 +118,10 @@ public final class RepoStore {
                 let diff = try await engine.load(status: file, staged: staged, from: repository)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    guard let self, self.selectedFile == file else { return }
-                    self.loadedDiff = diff
+                    guard let self,
+                          self.selectedFile == file,
+                          self.selectedFileIsStaged == staged else { return }
+                    self.setLoadedDiff(diff)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -136,7 +149,7 @@ public final class RepoStore {
                           self.selectedFile == file,
                           self.selectedFileIsStaged == staged,
                           self.selectedWorktree == worktree else { return }
-                    self.loadedDiff = diff
+                    self.setLoadedDiff(diff)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -144,6 +157,12 @@ public final class RepoStore {
             }
         }
         await diffTask?.value
+    }
+
+    /// DiffPane 在后台构建完成后回写。epoch 对不上说明选择已经变了。
+    public func updateDiffDocument(_ document: NSAttributedString?, epoch: Int) {
+        guard epoch == diffEpoch else { return }
+        diffDocument = document
     }
 
     // MARK: - 刷新
@@ -165,17 +184,19 @@ public final class RepoStore {
                 let statuses = try await statusResult
                 let stats = try await statsResult
                 guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard let self, self.selectedWorktree == worktree else { return }
+
+                let reload = await MainActor.run { () -> (file: FileStatus, staged: Bool)? in
+                    guard let self, self.selectedWorktree == worktree else { return nil }
                     self.fileStatuses = statuses
-                    self.lineStats = stats
+                    self.stagedLineStats = stats.staged
+                    self.unstagedLineStats = stats.unstaged
                     self.isLoadingFileList = false
-                    // 之前选中的文件如果还在，重新加载它的 diff。
-                    if let selected = self.selectedFile,
-                       !statuses.contains(where: { $0.path == selected.path }) {
-                        self.selectedFile = nil
-                        self.loadedDiff = nil
-                    }
+                    return self.reconcileSelection(with: statuses)
+                }
+
+                guard !Task.isCancelled else { return }
+                if let reload {
+                    await self?.select(file: reload.file, staged: reload.staged)
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -190,15 +211,21 @@ public final class RepoStore {
 
     public func restore() async {
         let state = stateStore.load()
+        var needsBookmarkRewrite = false
         for bookmark in state.repositoryBookmarks {
             var isStale = false
             guard let url = try? URL(resolvingBookmarkData: bookmark,
                                      options: .withSecurityScope,
                                      relativeTo: nil,
-                                     bookmarkDataIsStale: &isStale),
-                  !isStale else { continue }
+                                     bookmarkDataIsStale: &isStale)
+            else { continue }
+            // 书签过期但路径仍能解析时，照样拿安全作用域，并在后面重写书签。
             _ = url.startAccessingSecurityScopedResource()
             await addRepository(at: url)
+            if isStale { needsBookmarkRewrite = true }
+        }
+        if needsBookmarkRewrite {
+            persist()
         }
         if let path = state.selectedWorktreePath {
             let target = URL(fileURLWithPath: path)
@@ -208,6 +235,32 @@ public final class RepoStore {
     }
 
     // MARK: - 私有
+
+    private func setLoadedDiff(_ diff: LoadedDiff?) {
+        loadedDiff = diff
+        diffDocument = nil
+        diffEpoch += 1
+    }
+
+    /// 选中的路径+侧还在就返回需要重载的文件；否则清掉选择。
+    private func reconcileSelection(with statuses: [FileStatus]) -> (file: FileStatus, staged: Bool)? {
+        guard let selected = selectedFile else { return nil }
+        let staged = selectedFileIsStaged
+        if let current = statuses.first(where: { $0.path == selected.path }),
+           Self.sideStillExists(current, staged: staged) {
+            selectedFile = current
+            setLoadedDiff(nil)
+            return (current, staged)
+        }
+        selectedFile = nil
+        setLoadedDiff(nil)
+        return nil
+    }
+
+    private static func sideStillExists(_ status: FileStatus, staged: Bool) -> Bool {
+        if staged { return status.hasStagedChanges }
+        return status.hasUnstagedChanges || status.isUntracked
+    }
 
     private func startWatching(_ worktree: Worktree) {
         watcher = FileSystemWatcher(path: worktree.path, debounce: .milliseconds(100)) { [weak self] in

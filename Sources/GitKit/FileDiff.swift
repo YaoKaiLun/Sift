@@ -94,4 +94,11 @@ public struct FileDiff: Sendable, Equatable {
     public var deletedLineCount: Int {
         hunks.reduce(0) { $0 + $1.lines.count(where: { $0.kind == .deletion }) }
     }
+
+    /// 文本内容的粗算字节数，用来在解析完 git diff 后再判一次 500KB 折叠。
+    public var estimatedByteCount: Int {
+        hunks.reduce(0) { total, hunk in
+            total + hunk.lines.reduce(0) { $0 + $1.text.utf8.count + 1 }
+        }
+    }
 }
