@@ -120,14 +120,30 @@ public final class RepoStore {
 
     /// 用户在折叠占位条上点了"仍要查看"。
     public func expandCollapsedDiff() async {
+        diffTask?.cancel()
         guard let file = selectedFile, let worktree = selectedWorktree else { return }
+        let staged = selectedFileIsStaged
         let repository = GitRepository(root: worktree.path)
-        do {
-            loadedDiff = try await engine.loadIgnoringCollapse(
-                status: file, staged: selectedFileIsStaged, from: repository)
-        } catch {
-            errorMessage = "无法加载 diff：\(error)"
+        let engine = self.engine
+
+        diffTask = Task { [weak self] in
+            do {
+                let diff = try await engine.loadIgnoringCollapse(
+                    status: file, staged: staged, from: repository)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self,
+                          self.selectedFile == file,
+                          self.selectedFileIsStaged == staged,
+                          self.selectedWorktree == worktree else { return }
+                    self.loadedDiff = diff
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { self?.errorMessage = "无法加载 diff：\(error)" }
+            }
         }
+        await diffTask?.value
     }
 
     // MARK: - 刷新
