@@ -1,0 +1,4 @@
+{
+  "name": "Sift",
+  "install": "bash Scripts/cloud-agent-install.sh"
+}
