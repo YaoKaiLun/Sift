@@ -190,7 +190,7 @@ struct DiffTextView: NSViewRepresentable {
             guard let storage = textView.textStorage else { return }
             if storage.string == text.string {
                 if !storage.isEqual(to: text) {
-                    // attribute-only：不重置滚动位置
+                    // attribute-only：同一段字符、新属性（含语法高亮第三遍）。不 replaceCharacters，滚动不跳。
                     storage.beginEditing()
                     text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attrs, range, _ in
                         storage.setAttributes(attrs, range: range)

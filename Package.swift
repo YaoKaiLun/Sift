@@ -9,17 +9,20 @@ let package = Package(
         .library(name: "DiffEngine", targets: ["DiffEngine"]),
         .library(name: "RepoStore", targets: ["RepoStore"]),
         .library(name: "SiftUI", targets: ["SiftUI"]),
+        .library(name: "Highlighter", targets: ["Highlighter"]),
     ],
     targets: [
         .target(name: "GitKit"),
         .target(name: "DiffEngine", dependencies: ["GitKit"]),
         .target(name: "RepoStore", dependencies: ["GitKit", "DiffEngine"]),
+        .target(name: "Highlighter"),
         .target(name: "SiftUI",
-                dependencies: ["GitKit", "DiffEngine", "RepoStore"],
+                dependencies: ["GitKit", "DiffEngine", "RepoStore", "Highlighter"],
                 resources: [.process("Resources")]),
         .testTarget(name: "GitKitTests", dependencies: ["GitKit"]),
         .testTarget(name: "DiffEngineTests", dependencies: ["DiffEngine", "SiftUI"]),
         .testTarget(name: "RepoStoreTests", dependencies: ["RepoStore"]),
+        .testTarget(name: "HighlighterTests", dependencies: ["Highlighter"]),
         .testTarget(name: "PerformanceTests", dependencies: ["GitKit", "DiffEngine", "RepoStore"]),
     ]
 )

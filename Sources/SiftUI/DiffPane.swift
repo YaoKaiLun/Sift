@@ -1,7 +1,9 @@
 import SwiftUI
+import AppKit
 import GitKit
 import DiffEngine
 import RepoStore
+import Highlighter
 
 struct DiffPane: View {
     @Environment(RepoStore.self) private var store
@@ -182,6 +184,65 @@ struct DiffPane: View {
               store.selectedFileIsStaged == staged,
               (store.usesSplitDiff ? DiffLayout.split : DiffLayout.unified) == layout else { return }
         store.updateDiffDocument(storeDocument(from: built), epoch: epoch)
+
+        let path = file?.path ?? ""
+        let highlightTask = Task.detached(priority: .userInitiated) {
+            let highlighter = Highlighter()
+            let left = DiffSyntaxHighlight.paint(built.text, path: path, highlighter: highlighter)
+            let right = built.splitRight.map {
+                DiffSyntaxHighlight.paint($0, path: path, highlighter: highlighter)
+            }
+            return DiffDocument(text: left, splitRight: right, hunkHeaders: built.hunkHeaders)
+        }
+        let highlighted = await withTaskCancellationHandler {
+            await highlightTask.value
+        } onCancel: {
+            highlightTask.cancel()
+        }
+        guard !Task.isCancelled,
+              store.diffEpoch == epoch,
+              store.selectedFile == file,
+              store.selectedFileIsStaged == staged else { return }
+        store.updateDiffDocument(storeDocument(from: highlighted), epoch: epoch)
+    }
+}
+
+/// 第三遍：只改 code 列 foregroundColor，其它属性（底色、gutter、role）保持不动。
+private enum DiffSyntaxHighlight {
+    static func color(for kind: TokenKind) -> NSColor {
+        switch kind {
+        case .keyword: .systemPurple
+        case .string: .systemRed
+        case .comment: .secondaryLabelColor
+        case .number: .systemBlue
+        case .type: .systemTeal
+        }
+    }
+
+    static func paint(_ text: NSAttributedString,
+                      path: String,
+                      highlighter: Highlighter) -> NSAttributedString {
+        guard !Task.isCancelled else { return text }
+        let result = NSMutableAttributedString(attributedString: text)
+        let ns = text.string as NSString
+        let full = NSRange(location: 0, length: text.length)
+        text.enumerateAttribute(.siftRole, in: full) { value, range, stop in
+            if Task.isCancelled {
+                stop.pointee = true
+                return
+            }
+            guard (value as? String) == "code" else { return }
+            let lineText = ns.substring(with: range)
+            for span in highlighter.tokens(in: lineText, path: path) {
+                let painted = NSRange(
+                    location: range.location + span.range.lowerBound,
+                    length: span.range.count)
+                guard painted.location >= range.location,
+                      NSMaxRange(painted) <= NSMaxRange(range) else { continue }
+                result.addAttribute(.foregroundColor, value: color(for: span.kind), range: painted)
+            }
+        }
+        return result
     }
 }
 
