@@ -359,9 +359,9 @@ struct DiffPane: View {
         let worktree = store.selectedWorktree?.path.path ?? ""
         if store.usesContinuousDiff {
             let ids = store.continuousLoaded.keys.sorted().joined(separator: ",")
-            return "c:\(worktree)|\(ids)"
+            return "c:\(store.diffEpoch):\(worktree)|\(ids)"
         }
-        return "s:\(worktree)|\(store.selectedFile?.path ?? "")|\(store.selectedFileIsStaged)"
+        return "s:\(store.diffEpoch):\(worktree)|\(store.selectedFile?.path ?? "")|\(store.selectedFileIsStaged)"
     }
 
     private var blameLookup: [Int: BlameLine] {

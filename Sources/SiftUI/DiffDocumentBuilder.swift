@@ -63,6 +63,14 @@ public struct DiffDocument: @unchecked Sendable {
 public enum DiffDocumentBuilder {
     private static let gutterWidth = 4
 
+    /// 从 `.siftRole == "gutter"` 文本取新文件行号：按空白切分，取最后一个整数。
+    /// 不要 `prefix(4)`，否则 ≥10000 的行会错位。
+    static func newLineNumber(fromGutter gutter: String) -> Int? {
+        gutter.split(whereSeparator: \.isWhitespace)
+            .compactMap { Int($0) }
+            .last
+    }
+
     /// 选区按行处理：丢掉 gutter，保留 header/code；分栏对齐空行不进结果。
     public static func copyableString(from text: NSAttributedString, range: NSRange) -> String {
         guard range.length > 0,

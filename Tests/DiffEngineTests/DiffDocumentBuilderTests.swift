@@ -89,6 +89,31 @@ final class DiffDocumentBuilderTests: XCTestCase {
         XCTAssertTrue(headerText.hasPrefix("@@"))
     }
 
+    func testNewLineNumberUsesLastIntegerField() {
+        XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: "   1    2 "), 2)
+        XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: "9999 10000 "), 10000)
+        XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: "10000 10001 "), 10001)
+        XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: " 10000 "), 10000)
+        XCTAssertNil(DiffDocumentBuilder.newLineNumber(fromGutter: "          "))
+    }
+
+    func testNewLineNumberFromBuiltFiveDigitGutter() {
+        let diff = makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 9999, newLineNumber: 10000, text: "keep"),
+        ], oldStart: 9999, newStart: 10000)
+        let document = DiffDocumentBuilder.build(diff, layout: .unified)
+        let ns = document.text.string as NSString
+        let code = ns.range(of: "keep")
+        let line = ns.lineRange(for: code)
+        var gutter = ""
+        document.text.enumerateAttributes(in: line, options: []) { attrs, run, _ in
+            if attrs[.siftRole] as? String == "gutter" {
+                gutter += ns.substring(with: run)
+            }
+        }
+        XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: gutter), 10000)
+    }
+
     func testGutterRunsAreMarked() {
         let diff = makeDiff([
             DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),

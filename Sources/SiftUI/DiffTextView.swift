@@ -114,6 +114,7 @@ struct DiffTextView: NSViewRepresentable {
         private var blameHits: [(rect: NSRect, line: BlameLine)] = []
         private var blamePopover: NSPopover?
         private var blameDetailTask: Task<Void, Never>?
+        private var lastBlameDocumentIdentity: String = ""
 
         var blameHitRects: [NSRect] { blameHits.map(\.rect) }
 
@@ -156,9 +157,12 @@ struct DiffTextView: NSViewRepresentable {
             self.blameByNewLine = blameByNewLine
             self.blameByFileID = blameByFileID
             self.loadBlameCommit = loadBlameCommit
-            if !showsBlame {
+            let identity = blameDocumentIdentity()
+            if !showsBlame || identity != lastBlameDocumentIdentity {
+                cancelBlameDetailTask()
                 blamePopover?.performClose(nil)
             }
+            lastBlameDocumentIdentity = identity
             let wantSplit = document.splitRight != nil
             if container.subviews.isEmpty || wantSplit != isSplit {
                 rebuildHierarchy(split: wantSplit)
@@ -193,6 +197,7 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         private func rebuildHierarchy(split: Bool) {
+            cancelBlameDetailTask()
             NotificationCenter.default.removeObserver(self)
             container?.subviews.forEach { $0.removeFromSuperview() }
             overlay = nil
@@ -291,6 +296,7 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         private func attachBlameOverlay(to scrollView: NSScrollView) {
+            cancelBlameDetailTask()
             let overlay = BlameOverlayView()
             overlay.autoresizingMask = [.width, .height]
             overlay.frame = scrollView.bounds
@@ -401,6 +407,20 @@ struct DiffTextView: NSViewRepresentable {
         deinit {
             blameDetailTask?.cancel()
             NotificationCenter.default.removeObserver(self)
+        }
+
+        private func cancelBlameDetailTask() {
+            blameDetailTask?.cancel()
+            blameDetailTask = nil
+        }
+
+        private func blameDocumentIdentity() -> String {
+            let files = document.fileHeaders.map(\.id).joined(separator: ",")
+            let hunks = document.hunkHeaders.map(\.id).joined(separator: ",")
+            let ns = document.text.string as NSString
+            let prefixLen = min(64, ns.length)
+            let head = prefixLen == 0 ? "" : ns.substring(to: prefixLen)
+            return "\(files)|\(hunks)|\(ns.length)|\(head)"
         }
 
         func mouseMoved(at pointInOverlay: NSPoint) {
@@ -783,7 +803,8 @@ struct DiffTextView: NSViewRepresentable {
                 }
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    self?.showBlamePopover(content, relativeTo: rect)
+                    guard let self, self.showsBlame, !Task.isCancelled else { return }
+                    self.showBlamePopover(content, relativeTo: rect)
                 }
             }
         }
@@ -849,17 +870,7 @@ struct DiffTextView: NSViewRepresentable {
                 }
             }
             guard !isHeader, !gutter.isEmpty, let marker else { return nil }
-            return (marker, newLineNumber(fromGutter: gutter))
-        }
-
-        private func newLineNumber(fromGutter gutter: String) -> Int? {
-            let trimmed = gutter.trimmingCharacters(in: .whitespaces)
-            if gutter.count >= 10 {
-                let newField = gutter.dropFirst(5).prefix(4)
-                    .trimmingCharacters(in: .whitespaces)
-                return Int(newField)
-            }
-            return Int(trimmed)
+            return (marker, DiffDocumentBuilder.newLineNumber(fromGutter: gutter))
         }
 
         private func lineRectInOverlay(for range: NSRange,
@@ -877,7 +888,7 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         private func showBlamePopover(_ content: BlameCommitContent, relativeTo rect: NSRect) {
-            guard let overlay = blameOverlay else { return }
+            guard showsBlame, let overlay = blameOverlay else { return }
             blamePopover?.performClose(nil)
             let popover = NSPopover()
             popover.behavior = .transient
