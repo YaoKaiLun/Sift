@@ -89,6 +89,45 @@ final class DiffDocumentBuilderTests: XCTestCase {
         XCTAssertTrue(headerText.hasPrefix("@@"))
     }
 
+    func testGutterRunsAreMarked() {
+        let diff = makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
+        ])
+        let document = DiffDocumentBuilder.build(diff, layout: .unified)
+        let text = document.text
+        let range = (text.string as NSString).range(of: "keep")
+        let role = text.attribute(.siftRole, at: range.location, effectiveRange: nil) as? String
+        XCTAssertEqual(role, "code")
+        // 文档开头是 hunk 头（header），gutter 在含 keep 的那一行行首。
+        let lineStart = (text.string as NSString).lineRange(for: range).location
+        let gutterRole = text.attribute(.siftRole, at: lineStart, effectiveRange: nil) as? String
+        XCTAssertEqual(gutterRole, "gutter")
+    }
+
+    func testSplitPutsDeletionOnLeftAndAdditionOnRight() throws {
+        let diff = makeDiff([
+            DiffLine(kind: .deletion, oldLineNumber: 1, newLineNumber: nil, text: "gone"),
+            DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 1, text: "fresh"),
+        ])
+        let document = DiffDocumentBuilder.build(diff, layout: .split)
+        XCTAssertTrue(document.splitLeft.string.contains("gone"))
+        XCTAssertFalse(document.splitLeft.string.contains("fresh"))
+        let right = try XCTUnwrap(document.splitRight)
+        XCTAssertTrue(right.string.contains("fresh"))
+        XCTAssertFalse(right.string.contains("gone"))
+    }
+
+    func testCopyableStringDropsGutter() {
+        let diff = makeDiff([
+            DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 1, text: "fresh"),
+        ])
+        let document = DiffDocumentBuilder.build(diff, layout: .unified)
+        let copied = DiffDocumentBuilder.copyableString(from: document.text,
+            range: NSRange(location: 0, length: document.text.length))
+        XCTAssertFalse(copied.contains("   1"), "行号不应出现在复制结果里")
+        XCTAssertTrue(copied.contains("+fresh") || copied.contains("fresh"))
+    }
+
     /// 性能护栏：大 diff 的文档构建必须够快，不然点开文件那 100ms 预算就爆了。
     func testBuildsLargeDocumentQuickly() {
         let lines = (0..<10_000).map { index in

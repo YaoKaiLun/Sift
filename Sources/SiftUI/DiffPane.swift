@@ -27,7 +27,7 @@ struct DiffPane: View {
         } message: {
             Text("\(store.selectedFile?.path ?? "")\n此操作无法从 git 恢复。")
         }
-        .task(id: store.diffEpoch) {
+        .task(id: "\(store.diffEpoch)-\(store.usesSplitDiff)") {
             await buildDocumentIfNeeded()
         }
     }
@@ -68,6 +68,7 @@ struct DiffPane: View {
 
     @ViewBuilder
     private var headerTrailing: some View {
+        @Bindable var store = store
         HStack(spacing: 8) {
             if store.selectedFile?.isUntracked == true {
                 Button("删除文件") { confirmsDelete = true }
@@ -97,6 +98,10 @@ struct DiffPane: View {
                     }
                 }
             }
+            PlainIconToggle(selection: $store.usesSplitDiff,
+                            falseIcon: "rectangle.split.1x2",
+                            trueIcon: "rectangle.split.2x1",
+                            help: "切换统一视图与分栏视图")
         }
     }
 
@@ -150,6 +155,7 @@ struct DiffPane: View {
     private func viewDocument(from stored: RepoStore.DiffDocument) -> DiffDocument {
         DiffDocument(
             text: stored.text,
+            splitRight: stored.splitRight,
             hunkHeaders: stored.hunkHeaders.map { DiffHunkHeader(id: $0.id, range: $0.range) }
         )
     }
@@ -157,6 +163,7 @@ struct DiffPane: View {
     private func storeDocument(from built: DiffDocument) -> RepoStore.DiffDocument {
         RepoStore.DiffDocument(
             text: built.text,
+            splitRight: built.splitRight,
             hunkHeaders: built.hunkHeaders.map { RepoStore.DiffHunkHeader(id: $0.id, range: $0.range) }
         )
     }
@@ -168,10 +175,12 @@ struct DiffPane: View {
               case .textual = diff.content else { return }
         let file = store.selectedFile
         let staged = store.selectedFileIsStaged
-        let built = await DiffDocumentBuilder.buildOffMainActor(diff)
+        let layout: DiffLayout = store.usesSplitDiff ? .split : .unified
+        let built = await DiffDocumentBuilder.buildOffMainActor(diff, layout: layout)
         guard store.diffEpoch == epoch,
               store.selectedFile == file,
-              store.selectedFileIsStaged == staged else { return }
+              store.selectedFileIsStaged == staged,
+              (store.usesSplitDiff ? DiffLayout.split : DiffLayout.unified) == layout else { return }
         store.updateDiffDocument(storeDocument(from: built), epoch: epoch)
     }
 }

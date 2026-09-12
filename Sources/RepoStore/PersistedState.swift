@@ -12,15 +12,18 @@ public struct PersistedState: Codable, Sendable, Equatable {
     public var repositoryBookmarks: [Data]
     public var selectedWorktreePath: String?
     public var usesTreeView: Bool
+    public var usesSplitDiff: Bool
     public var appearance: AppearancePreference
 
     public init(repositoryBookmarks: [Data] = [],
                 selectedWorktreePath: String? = nil,
                 usesTreeView: Bool = false,
+                usesSplitDiff: Bool = false,
                 appearance: AppearancePreference = .system) {
         self.repositoryBookmarks = repositoryBookmarks
         self.selectedWorktreePath = selectedWorktreePath
         self.usesTreeView = usesTreeView
+        self.usesSplitDiff = usesSplitDiff
         self.appearance = appearance
     }
 
@@ -29,6 +32,7 @@ public struct PersistedState: Codable, Sendable, Equatable {
         repositoryBookmarks = try container.decodeIfPresent([Data].self, forKey: .repositoryBookmarks) ?? []
         selectedWorktreePath = try container.decodeIfPresent(String.self, forKey: .selectedWorktreePath)
         usesTreeView = try container.decodeIfPresent(Bool.self, forKey: .usesTreeView) ?? false
+        usesSplitDiff = try container.decodeIfPresent(Bool.self, forKey: .usesSplitDiff) ?? false
         appearance = try container.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
     }
 }

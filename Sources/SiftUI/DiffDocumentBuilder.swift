@@ -11,12 +11,28 @@ public struct DiffHunkHeader: Sendable, Equatable {
     }
 }
 
+public enum DiffLayout: Sendable {
+    case unified
+    case split
+}
+
+extension NSAttributedString.Key {
+    public static let siftRole = NSAttributedString.Key("siftRole")
+}
+
 public struct DiffDocument: @unchecked Sendable {
     public let text: NSAttributedString
+    public let splitRight: NSAttributedString?
     public let hunkHeaders: [DiffHunkHeader]
 
-    public init(text: NSAttributedString, hunkHeaders: [DiffHunkHeader] = []) {
+    /// 分栏左栏；统一视图下就是全文。与 `text` 同一份文档。
+    public var splitLeft: NSAttributedString { text }
+
+    public init(text: NSAttributedString,
+                splitRight: NSAttributedString? = nil,
+                hunkHeaders: [DiffHunkHeader] = []) {
         self.text = text
+        self.splitRight = splitRight
         self.hunkHeaders = hunkHeaders
     }
 }
@@ -25,20 +41,47 @@ public struct DiffDocument: @unchecked Sendable {
 ///
 /// 纯函数，没有 UI 依赖，因此可以完整测试，也可以放到主线程之外去跑。
 ///
-/// 行号写进文本本身（而不是画在单独的视图里），这样选中和复制会自然工作，
-/// 也不需要维护第二个视图跟主文本滚动同步。代价是复制出来会带行号，
-/// 计划二会加一个"复制时剔除行号"的处理。
+/// 行号写进文本本身并标 `.siftRole = gutter`。复制走 `copyableString`，丢掉行号列。
 public enum DiffDocumentBuilder {
     private static let gutterWidth = 4
 
-    public static func build(_ diff: FileDiff) -> DiffDocument {
+    /// 选区按行处理：丢掉 gutter，保留 header/code；分栏对齐空行不进结果。
+    public static func copyableString(from text: NSAttributedString, range: NSRange) -> String {
+        guard range.length > 0,
+              range.location >= 0,
+              NSMaxRange(range) <= text.length else { return "" }
+
+        let ns = text.string as NSString
+        var result = ""
+        var location = range.location
+        let end = NSMaxRange(range)
+
+        while location < end {
+            let lineRange = ns.lineRange(for: NSRange(location: location, length: 0))
+            let slice = NSIntersectionRange(lineRange, range)
+            if slice.length == 0 { break }
+
+            var keepsLine = false
+            var lineText = ""
+            text.enumerateAttributes(in: slice) { attrs, run, _ in
+                let role = attrs[.siftRole] as? String
+                if role == "gutter" { return }
+                if role == "code" || role == "header" { keepsLine = true }
+                lineText += ns.substring(with: run)
+            }
+            if keepsLine {
+                result += lineText
+            }
+            location = NSMaxRange(slice)
+        }
+        return result
+    }
+
+    public static func build(_ diff: FileDiff, layout: DiffLayout = .unified) -> DiffDocument {
         guard case .textual(let hunks) = diff.content, !hunks.isEmpty else {
             return DiffDocument(text: NSAttributedString(), hunkHeaders: [])
         }
 
-        let document = NSMutableAttributedString()
-        var headers: [DiffHunkHeader] = []
-        headers.reserveCapacity(hunks.count)
         let paragraph = NSMutableParagraphStyle()
         paragraph.minimumLineHeight = Theme.codeLineHeight
         paragraph.maximumLineHeight = Theme.codeLineHeight
@@ -49,8 +92,32 @@ public enum DiffDocumentBuilder {
         let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         let colors = DiffColors()
 
+        switch layout {
+        case .unified:
+            return buildUnified(hunks: hunks, paragraph: paragraph, font: font, colors: colors)
+        case .split:
+            return buildSplit(hunks: hunks, paragraph: paragraph, font: font, colors: colors)
+        }
+    }
+
+    /// 把大文档的构建挪出主线程。DiffDocument 以 @unchecked Sendable 跨隔离域交回。
+    public static func buildOffMainActor(_ diff: FileDiff,
+                                         layout: DiffLayout = .unified) async -> DiffDocument {
+        await Task.detached(priority: .userInitiated) {
+            build(diff, layout: layout)
+        }.value
+    }
+
+    private static func buildUnified(hunks: [Hunk],
+                                     paragraph: NSParagraphStyle,
+                                     font: NSFont,
+                                     colors: DiffColors) -> DiffDocument {
+        let document = NSMutableAttributedString()
+        var headers: [DiffHunkHeader] = []
+        headers.reserveCapacity(hunks.count)
+
         for (index, hunk) in hunks.enumerated() {
-            if index > 0 { document.append(NSAttributedString(string: "\n")) }
+            if index > 0 { document.append(separatorLine(paragraph: paragraph, font: font)) }
             let location = document.length
             let header = headerLine(for: hunk, paragraph: paragraph, font: font)
             document.append(header)
@@ -58,17 +125,68 @@ public enum DiffDocumentBuilder {
                 id: hunk.id,
                 range: NSRange(location: location, length: header.length)))
             for line in hunk.lines {
-                document.append(bodyLine(line, paragraph: paragraph, font: font, colors: colors))
+                document.append(bodyLine(line, gutter: .unified,
+                                         paragraph: paragraph, font: font, colors: colors))
             }
         }
-        return DiffDocument(text: document, hunkHeaders: headers)
+        return DiffDocument(text: document, splitRight: nil, hunkHeaders: headers)
     }
 
-    /// 把大文档的构建挪出主线程。DiffDocument 以 @unchecked Sendable 跨隔离域交回。
-    public static func buildOffMainActor(_ diff: FileDiff) async -> DiffDocument {
-        await Task.detached(priority: .userInitiated) {
-            build(diff)
-        }.value
+    private static func buildSplit(hunks: [Hunk],
+                                   paragraph: NSParagraphStyle,
+                                   font: NSFont,
+                                   colors: DiffColors) -> DiffDocument {
+        let left = NSMutableAttributedString()
+        let right = NSMutableAttributedString()
+        var headers: [DiffHunkHeader] = []
+        headers.reserveCapacity(hunks.count)
+
+        for (index, hunk) in hunks.enumerated() {
+            if index > 0 {
+                left.append(separatorLine(paragraph: paragraph, font: font))
+                right.append(separatorLine(paragraph: paragraph, font: font))
+            }
+            let location = left.length
+            let header = headerLine(for: hunk, paragraph: paragraph, font: font)
+            left.append(header)
+            right.append(header)
+            headers.append(DiffHunkHeader(
+                id: hunk.id,
+                range: NSRange(location: location, length: header.length)))
+            for line in hunk.lines {
+                appendSplitLine(line, left: left, right: right,
+                                paragraph: paragraph, font: font, colors: colors)
+            }
+        }
+        return DiffDocument(text: left, splitRight: right, hunkHeaders: headers)
+    }
+
+    private static func appendSplitLine(_ line: DiffLine,
+                                        left: NSMutableAttributedString,
+                                        right: NSMutableAttributedString,
+                                        paragraph: NSParagraphStyle,
+                                        font: NSFont,
+                                        colors: DiffColors) {
+        switch line.kind {
+        case .context:
+            left.append(bodyLine(line, gutter: .oldOnly,
+                                 paragraph: paragraph, font: font, colors: colors))
+            right.append(bodyLine(line, gutter: .newOnly,
+                                  paragraph: paragraph, font: font, colors: colors))
+        case .deletion:
+            left.append(bodyLine(line, gutter: .oldOnly,
+                                 paragraph: paragraph, font: font, colors: colors))
+            right.append(alignmentSpacer(paragraph: paragraph, font: font))
+        case .addition:
+            left.append(alignmentSpacer(paragraph: paragraph, font: font))
+            right.append(bodyLine(line, gutter: .newOnly,
+                                  paragraph: paragraph, font: font, colors: colors))
+        case .noNewlineMarker:
+            let marker = bodyLine(line, gutter: .unified,
+                                  paragraph: paragraph, font: font, colors: colors)
+            left.append(marker)
+            right.append(marker)
+        }
     }
 
     private static func headerLine(for hunk: Hunk,
@@ -82,10 +200,18 @@ public enum DiffDocumentBuilder {
             // quaternarySystemFill 在深色下几乎看不见，hunk 分界必须能一眼看出来。
             .backgroundColor: NSColor.textColor.withAlphaComponent(0.08),
             .paragraphStyle: paragraph,
+            .siftRole: "header",
         ])
     }
 
+    private enum GutterStyle {
+        case unified
+        case oldOnly
+        case newOnly
+    }
+
     private static func bodyLine(_ line: DiffLine,
+                                 gutter style: GutterStyle,
                                  paragraph: NSParagraphStyle,
                                  font: NSFont,
                                  colors: DiffColors) -> NSAttributedString {
@@ -94,12 +220,21 @@ public enum DiffDocumentBuilder {
                 .font: font,
                 .foregroundColor: NSColor.tertiaryLabelColor,
                 .paragraphStyle: paragraph,
+                .siftRole: "code",
             ])
         }
 
-        let oldNumber = line.oldLineNumber.map(String.init) ?? ""
-        let newNumber = line.newLineNumber.map(String.init) ?? ""
-        let gutter = pad(oldNumber) + " " + pad(newNumber) + " "
+        let gutter: String
+        switch style {
+        case .unified:
+            let oldNumber = line.oldLineNumber.map(String.init) ?? ""
+            let newNumber = line.newLineNumber.map(String.init) ?? ""
+            gutter = pad(oldNumber) + " " + pad(newNumber) + " "
+        case .oldOnly:
+            gutter = pad(line.oldLineNumber.map(String.init) ?? "") + " "
+        case .newOnly:
+            gutter = pad(line.newLineNumber.map(String.init) ?? "") + " "
+        }
 
         let marker: String
         switch line.kind {
@@ -114,14 +249,31 @@ public enum DiffDocumentBuilder {
             .foregroundColor: NSColor.tertiaryLabelColor,
             .backgroundColor: colors.gutter(for: line.kind),
             .paragraphStyle: paragraph,
+            .siftRole: "gutter",
         ]))
         result.append(NSAttributedString(string: "\(marker)\(line.text)\n", attributes: [
             .font: font,
             .foregroundColor: NSColor.labelColor,
             .backgroundColor: colors.body(for: line.kind),
             .paragraphStyle: paragraph,
+            .siftRole: "code",
         ]))
         return result
+    }
+
+    /// 分栏缺行：只含换行、无 gutter、不标 code，复制时丢掉。
+    private static func alignmentSpacer(paragraph: NSParagraphStyle, font: NSFont) -> NSAttributedString {
+        NSAttributedString(string: "\n", attributes: [
+            .font: font,
+            .paragraphStyle: paragraph,
+        ])
+    }
+
+    private static func separatorLine(paragraph: NSParagraphStyle, font: NSFont) -> NSAttributedString {
+        NSAttributedString(string: "\n", attributes: [
+            .font: font,
+            .paragraphStyle: paragraph,
+        ])
     }
 
     private static func pad(_ text: String) -> String {

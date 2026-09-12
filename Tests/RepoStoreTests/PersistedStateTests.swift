@@ -65,4 +65,16 @@ final class PersistedStateTests: XCTestCase {
         XCTAssertTrue(state.usesTreeView)
         XCTAssertEqual(state.appearance, .system)
     }
+
+    /// 旧版 state.json 没有 usesSplitDiff 字段时，必须落到统一视图。
+    func testMissingSplitDiffDefaultsToFalse() throws {
+        let url = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"repositoryBookmarks":[],"usesTreeView":true}"#.utf8).write(to: url)
+
+        let state = PersistedStateStore(fileURL: url).load()
+        XCTAssertFalse(state.usesSplitDiff)
+    }
 }

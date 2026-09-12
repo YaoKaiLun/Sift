@@ -29,10 +29,14 @@ public final class RepoStore {
 
     public struct DiffDocument: @unchecked Sendable {
         public let text: NSAttributedString
+        public let splitRight: NSAttributedString?
         public let hunkHeaders: [DiffHunkHeader]
 
-        public init(text: NSAttributedString, hunkHeaders: [DiffHunkHeader]) {
+        public init(text: NSAttributedString,
+                    splitRight: NSAttributedString? = nil,
+                    hunkHeaders: [DiffHunkHeader]) {
             self.text = text
+            self.splitRight = splitRight
             self.hunkHeaders = hunkHeaders
         }
     }
@@ -60,6 +64,10 @@ public final class RepoStore {
         didSet { persist() }
     }
 
+    public var usesSplitDiff: Bool {
+        didSet { persist() }
+    }
+
     public var appearance: AppearancePreference {
         didSet { persist() }
     }
@@ -84,6 +92,7 @@ public final class RepoStore {
         self.stateStore = stateStore
         let loaded = stateStore.load()
         self.usesTreeView = loaded.usesTreeView
+        self.usesSplitDiff = loaded.usesSplitDiff
         self.appearance = loaded.appearance
     }
 
@@ -396,6 +405,7 @@ public final class RepoStore {
             repositoryBookmarks: bookmarks,
             selectedWorktreePath: selectedWorktree?.path.path,
             usesTreeView: usesTreeView,
+            usesSplitDiff: usesSplitDiff,
             appearance: appearance)
         try? stateStore.save(state)
     }

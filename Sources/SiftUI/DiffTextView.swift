@@ -28,73 +28,31 @@ struct DiffTextView: NSViewRepresentable {
         Coordinator()
     }
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSTextView.scrollableTextView()
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = true
-        scrollView.borderType = .noBorder
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = .textBackgroundColor
-
-        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isRichText = false
-        textView.drawsBackground = true
-        textView.backgroundColor = .textBackgroundColor
-        // 左边距和栏头标题对齐（Theme.horizontalPadding）。
-        textView.textContainerInset = NSSize(width: 10, height: 6)
-        textView.isAutomaticQuoteSubstitutionEnabled = false
-        textView.isAutomaticSpellingCorrectionEnabled = false
-        // 不换行：宽度设为无限，靠横向滚动。
-        textView.textContainer?.widthTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(
-            width: CGFloat.greatestFiniteMagnitude,
-            height: CGFloat.greatestFiniteMagnitude)
-        textView.isHorizontallyResizable = true
-        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
-                                  height: CGFloat.greatestFiniteMagnitude)
-
-        context.coordinator.attach(scrollView: scrollView, textView: textView)
-        return scrollView
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView(frame: .zero)
+        context.coordinator.install(in: container, document: document, hunkActions: hunkActions)
+        return container
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView,
-              let storage = textView.textStorage else { return }
-        let text = document.text
-        context.coordinator.document = document
-        context.coordinator.hunkActions = hunkActions
-
-        if storage.string == text.string {
-            if !storage.isEqual(to: text) {
-                // attribute-only：不重置滚动位置
-                storage.beginEditing()
-                text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attrs, range, _ in
-                    storage.setAttributes(attrs, range: range)
-                }
-                storage.endEditing()
-            }
-        } else {
-            storage.beginEditing()
-            storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: text)
-            storage.endEditing()
-            textView.scroll(NSPoint(x: 0, y: 0))
-        }
-        context.coordinator.relayoutOverlay()
+    func updateNSView(_ container: NSView, context: Context) {
+        context.coordinator.install(in: container, document: document, hunkActions: hunkActions)
     }
 
     @MainActor
     final class Coordinator: NSObject {
         var document = DiffDocument(text: NSAttributedString(), hunkHeaders: [])
         var hunkActions: HunkActions?
+        private weak var container: NSView?
         private weak var scrollView: NSScrollView?
         private weak var textView: NSTextView?
+        private weak var rightScrollView: NSScrollView?
+        private weak var rightTextView: NSTextView?
         private var overlay: HunkOverlayView?
         private var buttonStack: NSStackView?
         private var hoveredID: String?
         private var lastButtonIdentity: ButtonIdentity?
+        private var isSplit = false
+        private var isSyncing = false
 
         private struct ButtonIdentity: Equatable {
             var hoveredID: String
@@ -104,21 +62,119 @@ struct DiffTextView: NSViewRepresentable {
             var isEnabled: Bool
         }
 
-        func attach(scrollView: NSScrollView, textView: NSTextView) {
-            self.scrollView = scrollView
-            self.textView = textView
+        func install(in container: NSView, document: DiffDocument, hunkActions: HunkActions?) {
+            self.container = container
+            self.document = document
+            self.hunkActions = hunkActions
+            let wantSplit = document.splitRight != nil
+            if container.subviews.isEmpty || wantSplit != isSplit {
+                rebuildHierarchy(split: wantSplit)
+            }
+            if let textView {
+                replaceText(in: textView, with: document.text)
+            }
+            if let rightTextView, let right = document.splitRight {
+                replaceText(in: rightTextView, with: right)
+            }
+            relayoutOverlay()
+        }
 
+        private func rebuildHierarchy(split: Bool) {
+            NotificationCenter.default.removeObserver(self)
+            container?.subviews.forEach { $0.removeFromSuperview() }
+            overlay = nil
+            buttonStack = nil
+            hoveredID = nil
+            lastButtonIdentity = nil
+            scrollView = nil
+            textView = nil
+            rightScrollView = nil
+            rightTextView = nil
+            isSplit = split
+            guard let container else { return }
+
+            if split {
+                let (leftScroll, leftText) = makeScrollView()
+                let (rightScroll, rightText) = makeScrollView()
+                scrollView = leftScroll
+                textView = leftText
+                rightScrollView = rightScroll
+                rightTextView = rightText
+
+                let splitView = NSSplitView()
+                splitView.isVertical = true
+                splitView.dividerStyle = .thin
+                splitView.frame = container.bounds
+                splitView.autoresizingMask = [.width, .height]
+                splitView.addSubview(leftScroll)
+                splitView.addSubview(rightScroll)
+                container.addSubview(splitView)
+
+                attachOverlay(to: leftScroll)
+                observeScroll(leftScroll)
+                observeScroll(rightScroll)
+            } else {
+                let (single, text) = makeScrollView()
+                scrollView = single
+                textView = text
+                single.frame = container.bounds
+                single.autoresizingMask = [.width, .height]
+                container.addSubview(single)
+                attachOverlay(to: single)
+                observeScroll(single)
+            }
+        }
+
+        private func makeScrollView() -> (NSScrollView, DiffCopyTextView) {
+            let scrollView = NSScrollView()
+            scrollView.hasVerticalScroller = true
+            scrollView.hasHorizontalScroller = true
+            scrollView.autohidesScrollers = true
+            scrollView.borderType = .noBorder
+            scrollView.drawsBackground = true
+            scrollView.backgroundColor = .textBackgroundColor
+
+            let textView = DiffCopyTextView(frame: .zero)
+            textView.minSize = NSSize(width: 0, height: 0)
+            textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                      height: CGFloat.greatestFiniteMagnitude)
+            textView.isVerticallyResizable = true
+            textView.isHorizontallyResizable = true
+            textView.autoresizingMask = [.width]
+            textView.isEditable = false
+            textView.isSelectable = true
+            textView.isRichText = false
+            textView.allowsUndo = false
+            textView.drawsBackground = true
+            textView.backgroundColor = .textBackgroundColor
+            // 左边距和栏头标题对齐（Theme.horizontalPadding）。
+            textView.textContainerInset = NSSize(width: 10, height: 6)
+            textView.isAutomaticQuoteSubstitutionEnabled = false
+            textView.isAutomaticSpellingCorrectionEnabled = false
+            // 不换行：宽度设为无限，靠横向滚动。
+            textView.textContainer?.widthTracksTextView = false
+            textView.textContainer?.containerSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude)
+
+            scrollView.documentView = textView
+            return (scrollView, textView)
+        }
+
+        private func attachOverlay(to scrollView: NSScrollView) {
             let overlay = HunkOverlayView()
             overlay.autoresizingMask = [.width, .height]
             overlay.frame = scrollView.bounds
             overlay.coordinator = self
             scrollView.addSubview(overlay, positioned: .above, relativeTo: nil)
             self.overlay = overlay
+        }
 
+        private func observeScroll(_ scrollView: NSScrollView) {
             scrollView.contentView.postsBoundsChangedNotifications = true
             NotificationCenter.default.addObserver(
                 self,
-                selector: #selector(relayoutOverlay),
+                selector: #selector(clipBoundsDidChange(_:)),
                 name: NSView.boundsDidChangeNotification,
                 object: scrollView.contentView
             )
@@ -128,6 +184,53 @@ struct DiffTextView: NSViewRepresentable {
                 name: NSScrollView.didLiveScrollNotification,
                 object: scrollView
             )
+        }
+
+        private func replaceText(in textView: NSTextView, with text: NSAttributedString) {
+            guard let storage = textView.textStorage else { return }
+            if storage.string == text.string {
+                if !storage.isEqual(to: text) {
+                    // attribute-only：不重置滚动位置
+                    storage.beginEditing()
+                    text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attrs, range, _ in
+                        storage.setAttributes(attrs, range: range)
+                    }
+                    storage.endEditing()
+                }
+            } else {
+                storage.beginEditing()
+                storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: text)
+                storage.endEditing()
+                textView.scroll(NSPoint(x: 0, y: 0))
+            }
+        }
+
+        @objc private func clipBoundsDidChange(_ notification: Notification) {
+            if !isSyncing {
+                syncVerticalScroll(from: notification)
+            }
+            relayoutOverlay()
+        }
+
+        private func syncVerticalScroll(from notification: Notification) {
+            guard isSplit,
+                  let clip = notification.object as? NSClipView,
+                  let left = scrollView,
+                  let right = rightScrollView else { return }
+            isSyncing = true
+            defer { isSyncing = false }
+            let y = clip.documentVisibleRect.origin.y
+            if clip === left.contentView {
+                var origin = right.documentVisibleRect.origin
+                origin.y = y
+                right.contentView.scroll(to: origin)
+                right.reflectScrolledClipView(right.contentView)
+            } else if clip === right.contentView {
+                var origin = left.documentVisibleRect.origin
+                origin.y = y
+                left.contentView.scroll(to: origin)
+                left.reflectScrolledClipView(left.contentView)
+            }
         }
 
         deinit {
@@ -340,5 +443,23 @@ private final class HunkOverlayView: NSView {
             }
         }
         return nil
+    }
+}
+
+/// 复制时丢掉 gutter 行号，保留 +/- 与正文。
+private final class DiffCopyTextView: NSTextView {
+    override var writablePasteboardTypes: [NSPasteboard.PasteboardType] {
+        [.string]
+    }
+
+    override func writeSelection(to pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == .string, let storage = textStorage else { return false }
+        let copied = DiffDocumentBuilder.copyableString(from: storage, range: selectedRange())
+        pboard.declareTypes([.string], owner: nil)
+        return pboard.setString(copied, forType: .string)
+    }
+
+    override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        writeSelection(to: pboard, type: .string)
     }
 }
