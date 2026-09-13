@@ -44,7 +44,7 @@ struct SourceSidebar: View {
                 }
             }
 
-            HStack(spacing: 0) {
+            HStack(spacing: 2) {
                 PlainIconMenu(systemName: store.appearance.symbolName, help: "外观") {
                     Button { store.appearance = .system } label: {
                         Label("跟随系统", systemImage: "circle.lefthalf.filled")
@@ -55,6 +55,11 @@ struct SourceSidebar: View {
                     Button { store.appearance = .dark } label: {
                         Label("深色", systemImage: "moon")
                     }
+                }
+                PlainIconButton(systemName: "gearshape",
+                                isSelected: store.showsExplainSettings,
+                                help: "模型配置") {
+                    store.showsExplainSettings.toggle()
                 }
                 Spacer(minLength: 0)
             }

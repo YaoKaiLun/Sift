@@ -46,6 +46,11 @@ public struct ContentView: View {
             .publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
             isFullScreen = false
         }
+        .overlay {
+            if store.showsExplainSettings {
+                settingsOverlay
+            }
+        }
         .preferredColorScheme(store.appearance.colorScheme)
         .alert("出错了",
                isPresented: .constant(store.errorMessage != nil),
@@ -60,6 +65,22 @@ public struct ContentView: View {
         Binding(
             get: { CGFloat(store.sidebarWidth) },
             set: { store.sidebarWidth = Double($0) })
+    }
+
+    private var settingsOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .onTapGesture { store.closeExplainSettings() }
+            SettingsView()
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.22), radius: 28, y: 10)
+        }
+        .onExitCommand { store.closeExplainSettings() }
     }
 
     private var fileListWidthBinding: Binding<CGFloat> {

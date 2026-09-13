@@ -33,12 +33,22 @@ public final class RepoStore {
         public let range: NSRange
         public let isPlaceholder: Bool
         public let isCollapsed: Bool
+        public let path: String
+        public let added: Int?
+        public let deleted: Int?
+        public let changeKind: FileChangeKind
 
-        public init(id: String, range: NSRange, isPlaceholder: Bool, isCollapsed: Bool) {
+        public init(id: String, range: NSRange, isPlaceholder: Bool, isCollapsed: Bool,
+                    path: String = "", added: Int? = nil, deleted: Int? = nil,
+                    changeKind: FileChangeKind = .unmodified) {
             self.id = id
             self.range = range
             self.isPlaceholder = isPlaceholder
             self.isCollapsed = isCollapsed
+            self.path = path
+            self.added = added
+            self.deleted = deleted
+            self.changeKind = changeKind
         }
     }
 
@@ -68,6 +78,9 @@ public final class RepoStore {
     public private(set) var unstagedLineStats: [String: LineStats] = [:]
     public private(set) var selectedFile: FileStatus?
     public private(set) var selectedFileIsStaged = false
+    /// 中栏多选。id 形如 `s:path` / `u:path`，与连续滚动 file id 相同。
+    public private(set) var selectedFileIDs: Set<String> = []
+    public private(set) var selectionAnchorID: String?
     public private(set) var loadedDiff: LoadedDiff?
     /// 已在后台构建好的 diff 文档。DiffPane.body 只负责交给 DiffTextView。
     public private(set) var diffDocument: DiffDocument?
@@ -111,11 +124,22 @@ public final class RepoStore {
     public var fileListWidth: Double
 
     public var usesContinuousDiff: Bool {
-        didSet { persist() }
+        didSet {
+            if usesContinuousDiff, showsBlame {
+                showsBlame = false
+            }
+            persist()
+        }
     }
 
     public var showsBlame: Bool {
-        didSet { persist() }
+        didSet {
+            if usesContinuousDiff, showsBlame {
+                showsBlame = false
+                return
+            }
+            persist()
+        }
     }
 
     /// 只走 Keychain，不写 state.json。
@@ -127,6 +151,12 @@ public final class RepoStore {
     }
 
     public var showsExplainPanel = false
+    /// 侧栏设置钮 / 未配置点「解释」时弹出模型配置。
+    public var showsExplainSettings = false
+    /// 请求已发出、第一个 token 还没到：面板应显示「思考中...」。
+    public var isExplainThinking: Bool {
+        explainTask != nil && explainStreamingText.isEmpty && explainError == nil
+    }
     public var explainDraft = ""
     public private(set) var explainHistory: [ExplainTurn] = []
     public private(set) var explainStreamingText = ""
@@ -175,7 +205,7 @@ public final class RepoStore {
         self.sidebarWidth = loaded.sidebarWidth
         self.fileListWidth = loaded.fileListWidth
         self.usesContinuousDiff = loaded.usesContinuousDiff
-        self.showsBlame = loaded.showsBlame
+        self.showsBlame = loaded.usesContinuousDiff ? false : loaded.showsBlame
         do {
             self.explainAPIKey = try keychain.get("api-key") ?? ""
         } catch {
@@ -211,6 +241,8 @@ public final class RepoStore {
             stagedLineStats = [:]
             unstagedLineStats = [:]
             selectedFile = nil
+            selectedFileIDs = []
+            selectionAnchorID = nil
             cancelContinuousExpands()
             continuousPlan = []
             continuousLoaded = [:]
@@ -238,6 +270,8 @@ public final class RepoStore {
 
         selectedWorktree = worktree
         selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
         setLoadedDiff(nil)
         fileStatuses = []
         stagedLineStats = [:]
@@ -248,7 +282,20 @@ public final class RepoStore {
         await refreshFileList()
     }
 
-    public func select(file: FileStatus, staged: Bool) async {
+    public static func fileSelectionID(path: String, staged: Bool) -> String {
+        "\(staged ? "s" : "u"):\(path)"
+    }
+
+    public func isFileSelected(_ file: FileStatus, staged: Bool) -> Bool {
+        selectedFileIDs.contains(Self.fileSelectionID(path: file.path, staged: staged))
+    }
+
+    public func select(file: FileStatus, staged: Bool, replacingSelection: Bool = true) async {
+        if replacingSelection {
+            let id = Self.fileSelectionID(path: file.path, staged: staged)
+            selectedFileIDs = [id]
+            selectionAnchorID = id
+        }
         if usesContinuousDiff {
             let fileChanged = selectedFile?.path != file.path || selectedFileIsStaged != staged
             if fileChanged {
@@ -267,7 +314,9 @@ public final class RepoStore {
         }
         selectedFile = file
         selectedFileIsStaged = staged
-        setLoadedDiff(nil)
+        if fileChanged {
+            setLoadedDiff(nil)
+        }
 
         guard let worktree = selectedWorktree else { return }
         let repository = GitRepository(root: worktree.path)
@@ -289,6 +338,51 @@ public final class RepoStore {
             }
         }
         await diffTask?.value
+    }
+
+    public func toggleFileInSelection(_ file: FileStatus, staged: Bool) async {
+        let id = Self.fileSelectionID(path: file.path, staged: staged)
+        if selectedFileIDs.contains(id) {
+            guard selectedFileIDs.count > 1 else { return }
+            selectedFileIDs.remove(id)
+            if selectedFile?.path == file.path, selectedFileIsStaged == staged {
+                await promoteAnotherSelectedFile()
+            }
+            return
+        }
+        if selectedFileIDs.isEmpty, let selected = selectedFile {
+            selectedFileIDs.insert(Self.fileSelectionID(path: selected.path, staged: selectedFileIsStaged))
+        }
+        selectedFileIDs.insert(id)
+        selectionAnchorID = id
+    }
+
+    public func selectFileRange(orderedIDs: [String], to id: String,
+                                 file: FileStatus, staged: Bool) async {
+        let anchor = selectionAnchorID ?? id
+        guard let i = orderedIDs.firstIndex(of: anchor),
+              let j = orderedIDs.firstIndex(of: id) else {
+            await select(file: file, staged: staged)
+            return
+        }
+        let lower = min(i, j)
+        let upper = max(i, j)
+        selectedFileIDs = Set(orderedIDs[lower...upper])
+        await select(file: file, staged: staged, replacingSelection: false)
+    }
+
+    private func promoteAnotherSelectedFile() async {
+        guard let nextID = selectedFileIDs.sorted().first else {
+            selectedFile = nil
+            selectionAnchorID = nil
+            setLoadedDiff(nil)
+            return
+        }
+        let staged = nextID.hasPrefix("s:")
+        let path = String(nextID.dropFirst(2))
+        guard let next = fileStatuses.first(where: { $0.path == path }) else { return }
+        selectionAnchorID = nextID
+        await select(file: next, staged: staged, replacingSelection: false)
     }
 
     /// 用户在折叠占位条上点了"仍要查看"。
@@ -412,7 +506,7 @@ public final class RepoStore {
         resetExplainConversation(keepingPanel: true)
     }
 
-    /// 选区上点「解释这段」。未配置则打开设置，不发请求。
+    /// 选区或 hunk 上点「解释」。未配置只弹出模型配置，不打开右侧面板。
     public func startExplain(selectedText: String, surroundingText: String) {
         guard isExplainConfigured else {
             openExplainSettings()
@@ -448,7 +542,11 @@ public final class RepoStore {
     }
 
     public func openExplainSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        showsExplainSettings = true
+    }
+
+    public func closeExplainSettings() {
+        showsExplainSettings = false
     }
 
     // MARK: - 刷新
@@ -522,19 +620,42 @@ public final class RepoStore {
     }
 
     public func stage(file: FileStatus) async {
-        await mutate(path: file.path) { try await $0.stage(path: file.path) }
+        await stage(files: [file])
+    }
+
+    public func stage(files: [FileStatus]) async {
+        let paths = files.map(\.path)
+        guard !paths.isEmpty else { return }
+        await mutate(paths: paths) { try await $0.stage(paths: paths) }
     }
 
     public func unstage(file: FileStatus) async {
-        await mutate(path: file.path) { try await $0.unstage(path: file.path) }
+        await unstage(files: [file])
+    }
+
+    public func unstage(files: [FileStatus]) async {
+        let paths = files.map(\.path)
+        guard !paths.isEmpty else { return }
+        await mutate(paths: paths) { try await $0.unstage(paths: paths) }
     }
 
     public func deleteUntracked(file: FileStatus) async {
-        guard file.isUntracked else {
-            errorMessage = "无法删除已跟踪文件：\(file.path)"
+        await deleteUntracked(files: [file])
+    }
+
+    public func deleteUntracked(files: [FileStatus]) async {
+        let targets = files.filter(\.isUntracked)
+        guard !targets.isEmpty else {
+            if let tracked = files.first(where: { !$0.isUntracked }) {
+                errorMessage = "无法删除已跟踪文件：\(tracked.path)"
+            }
             return
         }
-        await mutate(path: file.path) { try await $0.deleteUntracked(path: file.path) }
+        await mutate(paths: targets.map(\.path)) { repo in
+            for file in targets {
+                try await repo.deleteUntracked(path: file.path)
+            }
+        }
     }
 
     public func stage(hunk: Hunk, file: FileStatus? = nil, stagedSide: Bool? = nil) async {
@@ -596,21 +717,29 @@ public final class RepoStore {
 
     private func setLoadedDiff(_ diff: LoadedDiff?) {
         loadedDiff = diff
-        diffDocument = nil
+        if diff == nil {
+            diffDocument = nil
+        }
         diffEpoch += 1
     }
 
     /// 写进行中再点按钮直接忽略。成功后只失效该路径两侧缓存，再立刻刷新列表。
     private func mutate(path: String, _ body: (GitRepository) async throws -> Void) async {
+        await mutate(paths: [path], body)
+    }
+
+    private func mutate(paths: [String], _ body: (GitRepository) async throws -> Void) async {
         guard !isMutating, let worktree = selectedWorktree else { return }
         isMutating = true
         defer { isMutating = false }
         let repository = GitRepository(root: worktree.path)
         do {
             try await body(repository)
-            await engine.invalidate(worktreePath: worktree.path, filePath: path)
-            invalidateContinuousLoaded(ids: ["s:\(path)", "u:\(path)"])
+            for path in Set(paths) {
+                await engine.invalidate(worktreePath: worktree.path, filePath: path)
+            }
             await refreshFileList(invalidateAllCachedDiffs: false)
+            await reloadMutatedContinuous(paths: Set(paths))
         } catch {
             errorMessage = "无法完成操作：\(error)"
         }
@@ -629,33 +758,73 @@ public final class RepoStore {
         return .modified
     }
 
-    /// 选中的路径+侧还在就返回需要重载的文件；否则清掉选择。
+    /// 选中的路径+侧还在就返回需要重载的文件；否则改选多选里还在的文件，或清掉选择。
     private func reconcileSelection(with statuses: [FileStatus]) -> (file: FileStatus, staged: Bool)? {
-        guard let selected = selectedFile else { return nil }
-        let staged = selectedFileIsStaged
-        if let current = statuses.first(where: { $0.path == selected.path }),
-           Self.sideStillExists(current, staged: staged) {
+        pruneFileSelection(with: statuses)
+        if let selected = selectedFile,
+           let current = statuses.first(where: { $0.path == selected.path }),
+           Self.sideStillExists(current, staged: selectedFileIsStaged) {
             selectedFile = current
+            return (current, selectedFileIsStaged)
+        }
+        if let next = remainingSelectedFile(in: statuses) {
+            selectedFile = next.file
+            selectedFileIsStaged = next.staged
+            selectionAnchorID = Self.fileSelectionID(path: next.file.path, staged: next.staged)
             setLoadedDiff(nil)
-            return (current, staged)
+            return next
         }
         selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
         setLoadedDiff(nil)
         resetExplainConversation(keepingPanel: true)
         return nil
     }
 
     private func reconcileContinuousSelection(with statuses: [FileStatus]) {
-        guard let selected = selectedFile else { return }
-        let staged = selectedFileIsStaged
-        if let current = statuses.first(where: { $0.path == selected.path }),
-           Self.sideStillExists(current, staged: staged) {
+        pruneFileSelection(with: statuses)
+        if let selected = selectedFile,
+           let current = statuses.first(where: { $0.path == selected.path }),
+           Self.sideStillExists(current, staged: selectedFileIsStaged) {
             selectedFile = current
             return
         }
+        if let next = remainingSelectedFile(in: statuses) {
+            selectedFile = next.file
+            selectedFileIsStaged = next.staged
+            selectionAnchorID = Self.fileSelectionID(path: next.file.path, staged: next.staged)
+            return
+        }
         selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
         continuousRevealID = nil
         resetExplainConversation(keepingPanel: true)
+    }
+
+    private func remainingSelectedFile(in statuses: [FileStatus]) -> (file: FileStatus, staged: Bool)? {
+        for id in selectedFileIDs.sorted() {
+            let staged = id.hasPrefix("s:")
+            let path = String(id.dropFirst(2))
+            if let current = statuses.first(where: { $0.path == path }),
+               Self.sideStillExists(current, staged: staged) {
+                return (current, staged)
+            }
+        }
+        return nil
+    }
+
+    private func pruneFileSelection(with statuses: [FileStatus]) {
+        selectedFileIDs = selectedFileIDs.filter { id in
+            let staged = id.hasPrefix("s:")
+            let path = String(id.dropFirst(2))
+            guard let status = statuses.first(where: { $0.path == path }) else { return false }
+            return Self.sideStillExists(status, staged: staged)
+        }
+        if let anchor = selectionAnchorID, !selectedFileIDs.contains(anchor) {
+            selectionAnchorID = selectedFileIDs.sorted().first
+        }
     }
 
     private func rebuildContinuousPlan(preservesScroll: Bool = false) {
@@ -691,6 +860,39 @@ public final class RepoStore {
     private func cancelContinuousExpands() {
         for task in continuousExpandTasks.values { task.cancel() }
         continuousExpandTasks.removeAll()
+    }
+
+    /// 写完之后只重载已经展开的文件，视口外继续懒加载。
+    /// 旧 diff 留到新的到达，避免连续滚动先闪成占位头。
+    private func reloadMutatedContinuous(paths: Set<String>) async {
+        guard usesContinuousDiff, let worktree = selectedWorktree else { return }
+        let entries = paths.flatMap { path in
+            [true, false].compactMap { staged -> ContinuousDiffEntry? in
+                let id = Self.fileSelectionID(path: path, staged: staged)
+                guard continuousLoaded[id] != nil else { return nil }
+                return continuousPlan.first(where: { $0.id == id })
+            }
+        }
+        guard !entries.isEmpty else { return }
+        let repository = GitRepository(root: worktree.path)
+        let engine = self.engine
+        var fresh: [(id: String, diff: LoadedDiff)] = []
+        for entry in entries {
+            continuousExpandTasks[entry.id]?.cancel()
+            continuousExpandTasks[entry.id] = nil
+            do {
+                let diff = try await engine.load(
+                    status: entry.status, staged: entry.staged, from: repository)
+                fresh.append((entry.id, diff))
+            } catch {
+                errorMessage = "无法加载 diff：\(error)"
+            }
+        }
+        for item in fresh where continuousPlan.contains(where: { $0.id == item.id }) {
+            continuousLoaded[item.id] = item.diff
+        }
+        continuousPreservesScroll = true
+        diffEpoch += 1
     }
 
     private func startContinuousExpand(_ entry: ContinuousDiffEntry, ignoringCollapse: Bool) {
@@ -910,6 +1112,8 @@ public final class RepoStore {
         stagedLineStats = [:]
         unstagedLineStats = [:]
         selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
         cancelContinuousExpands()
         continuousPlan = []
         continuousLoaded = [:]

@@ -44,10 +44,14 @@ final class FixtureRepo {
     }
 
     func write(_ contents: String, to path: String) throws {
+        try write(Data(contents.utf8), to: path)
+    }
+
+    func write(_ data: Data, to path: String) throws {
         let target = url.appendingPathComponent(path)
         try FileManager.default.createDirectory(
             at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try contents.write(to: target, atomically: true, encoding: .utf8)
+        try data.write(to: target)
     }
 
     func delete(_ path: String) throws {

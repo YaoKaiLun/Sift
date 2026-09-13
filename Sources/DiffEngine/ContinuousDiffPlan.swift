@@ -36,13 +36,10 @@ public enum ContinuousDiffPlan {
         unstagedStats: [String: LineStats]
     ) -> [ContinuousDiffEntry] {
         var entries: [ContinuousDiffEntry] = []
-        entries.append(contentsOf: statuses.filter(\.hasStagedChanges).map { status in
+        entries.append(contentsOf: statuses.filter(\.hasStagedChanges).sorted(by: FileStatus.pathOrder).map { status in
             entry(status: status, staged: true, stats: stagedStats[status.path])
         })
-        entries.append(contentsOf: statuses.filter(\.hasUnstagedChanges).map { status in
-            entry(status: status, staged: false, stats: unstagedStats[status.path])
-        })
-        entries.append(contentsOf: statuses.filter(\.isUntracked).map { status in
+        entries.append(contentsOf: statuses.filter(\.hasWorkingTreeChanges).sorted(by: FileStatus.pathOrder).map { status in
             entry(status: status, staged: false, stats: unstagedStats[status.path])
         })
         return entries

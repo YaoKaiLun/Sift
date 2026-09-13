@@ -253,29 +253,13 @@ final class RepoStoreTests: XCTestCase {
         let file = try XCTUnwrap(store.fileStatuses.first { $0.path == "a.txt" })
         await store.stage(hunk: hunk, file: file, stagedSide: false)
 
-        XCTAssertNil(store.continuousLoaded[unstagedA.id],
-                     "hunk 暂存后必须丢掉过期的连续滚动缓存")
-        XCTAssertNil(store.continuousLoaded[unstagedB.id],
-                     "不得为刷新而强制 load 视口外文件")
-
-        store.loadContinuousEntries(
-            visibleRange: visibleA,
-            fileRanges: [
-                unstagedA.id: visibleA,
-                unstagedB.id: offscreenB,
-            ])
-
-        let reloadDeadline = Date().addingTimeInterval(2)
-        while store.continuousLoaded[unstagedA.id] == nil, Date() < reloadDeadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
         guard case .ready(let second) = store.continuousLoaded[unstagedA.id] else {
-            return XCTFail("下一轮视口应重载 a.txt，实际是 \(String(describing: store.continuousLoaded[unstagedA.id]))")
+            return XCTFail("可见文件应就地换成新 diff，实际是 \(String(describing: store.continuousLoaded[unstagedA.id]))")
         }
         XCTAssertFalse(second.hunks.flatMap(\.lines).contains(where: { $0.text == "FIRST" }),
                        "未暂存侧不应再含已暂存的 hunk")
         XCTAssertTrue(second.hunks.flatMap(\.lines).contains(where: { $0.text == "SECOND" }))
-        XCTAssertNil(store.continuousLoaded[unstagedB.id], "视口外仍不得 load")
+        XCTAssertNil(store.continuousLoaded[unstagedB.id], "不得为刷新而强制 load 视口外文件")
     }
 
     func testFullRefreshDropsContinuousLoadedBeforeCancelCanRace() async throws {
@@ -332,6 +316,56 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertEqual(keychain.values["api-key"], "sk-secret")
     }
 
+    func testSelectReplacesFileSelectionSet() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("a\n", to: "a.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("a\n", to: "new-a.txt", in: url)
+        try write("b\n", to: "new-b.txt", in: url)
+
+        let store = makeStore()
+        await store.addRepository(at: url)
+        let first = try XCTUnwrap(store.fileStatuses.first { $0.path == "new-a.txt" })
+        let second = try XCTUnwrap(store.fileStatuses.first { $0.path == "new-b.txt" })
+        await store.select(file: first, staged: false)
+        XCTAssertEqual(store.selectedFileIDs, ["u:new-a.txt"])
+
+        await store.toggleFileInSelection(second, staged: false)
+        XCTAssertEqual(store.selectedFileIDs, ["u:new-a.txt", "u:new-b.txt"])
+        XCTAssertEqual(store.selectedFile?.path, "new-a.txt")
+
+        await store.select(file: second, staged: false)
+        XCTAssertEqual(store.selectedFileIDs, ["u:new-b.txt"])
+        XCTAssertEqual(store.selectedFile?.path, "new-b.txt")
+    }
+
+    func testDeleteUntrackedRemovesEveryListedFile() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("tracked\n", to: "tracked.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("a\n", to: "new-a.txt", in: url)
+        try write("b\n", to: "new-b.txt", in: url)
+
+        let store = makeStore()
+        await store.addRepository(at: url)
+        let first = try XCTUnwrap(store.fileStatuses.first { $0.path == "new-a.txt" })
+        let second = try XCTUnwrap(store.fileStatuses.first { $0.path == "new-b.txt" })
+        await store.deleteUntracked(files: [first, second])
+
+        XCTAssertFalse(store.fileStatuses.contains { $0.path == "new-a.txt" })
+        XCTAssertFalse(store.fileStatuses.contains { $0.path == "new-b.txt" })
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("tracked.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("new-a.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("new-b.txt").path))
+    }
+
     func testClearingAPIKeyAfterInitDeletesKeychainItem() {
         let keychain = RecordingKeychain()
         keychain.values["api-key"] = "sk-secret"
@@ -339,6 +373,35 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertEqual(store.explainAPIKey, "sk-secret")
         store.explainAPIKey = ""
         XCTAssertEqual(keychain.deleted, ["api-key"])
+    }
+
+    func testEnablingContinuousDiffTurnsOffBlame() {
+        let store = makeStore()
+        store.showsBlame = true
+        store.usesContinuousDiff = true
+        XCTAssertTrue(store.usesContinuousDiff)
+        XCTAssertFalse(store.showsBlame)
+        store.usesContinuousDiff = false
+        XCTAssertFalse(store.showsBlame, "退出连续滚动不得自动打开 blame")
+    }
+
+    func testBlameCannotBeEnabledDuringContinuousDiff() {
+        let store = makeStore()
+        store.usesContinuousDiff = true
+        store.showsBlame = true
+        XCTAssertFalse(store.showsBlame)
+    }
+
+    func testRestoringContinuousDiffTurnsOffPersistedBlame() throws {
+        let stateURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("sift-state-\(UUID().uuidString)/state.json")
+        try PersistedStateStore(fileURL: stateURL).save(
+            PersistedState(usesContinuousDiff: true, showsBlame: true))
+        let store = RepoStore(
+            stateStore: PersistedStateStore(fileURL: stateURL),
+            keychain: MemoryKeychain())
+        XCTAssertTrue(store.usesContinuousDiff)
+        XCTAssertFalse(store.showsBlame)
     }
 }
 

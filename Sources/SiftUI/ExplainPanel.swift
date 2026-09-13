@@ -22,15 +22,14 @@ struct ExplainPanel: View {
             Divider()
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(Array(store.explainHistory.enumerated()), id: \.offset) { _, turn in
                         transcriptBlock(turn)
                     }
-                    if !store.explainStreamingText.isEmpty {
-                        Text(store.explainStreamingText)
-                            .font(Theme.codeFont)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    if store.isExplainThinking {
+                        thinkingRow
+                    } else if !store.explainStreamingText.isEmpty {
+                        bodyText(store.explainStreamingText)
                     }
                     if let error = store.explainError {
                         Text(error)
@@ -39,6 +38,7 @@ struct ExplainPanel: View {
                             .textSelection(.enabled)
                     }
                     if store.explainHistory.isEmpty,
+                       !store.isExplainThinking,
                        store.explainStreamingText.isEmpty,
                        store.explainError == nil {
                         Text("选中代码后点「解释这段」。")
@@ -46,36 +46,77 @@ struct ExplainPanel: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding(Theme.horizontalPadding)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Divider()
-            HStack(spacing: 8) {
-                TextField("追问同一选区…", text: $store.explainDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { store.submitExplainDraft() }
-                Button("发送") { store.submitExplainDraft() }
-                    .disabled(store.explainDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            .padding(.horizontal, Theme.horizontalPadding)
-            .padding(.vertical, 8)
+            composer
+                .padding(.horizontal, Theme.horizontalPadding)
+                .padding(.vertical, 10)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.chromeBackground)
     }
 
-    @ViewBuilder
-    private func transcriptBlock(_ turn: ExplainTurn) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(turn.role == .user ? "追问" : "解释")
+    private var thinkingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("思考中...")
                 .font(Theme.secondaryFont)
                 .foregroundStyle(.secondary)
-            Text(turn.text)
-                .font(Theme.codeFont)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var composer: some View {
+        @Bindable var store = store
+        let canSend = !store.explainDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return HStack(spacing: 6) {
+            TextField("追问同一选区…", text: $store.explainDraft)
+                .textFieldStyle(.plain)
+                .font(Theme.interfaceFont)
+                .iBeamCursor()
+                .onSubmit { store.submitExplainDraft() }
+            Button(action: store.submitExplainDraft) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(canSend ? Color.white : Color.secondary.opacity(0.7))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        Circle().fill(canSend ? Color.primary : Color.primary.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+            .pointerCursor()
+            .help("发送")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 6)
+        .frame(height: 36)
+        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func transcriptBlock(_ turn: ExplainTurn) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if turn.role == .user {
+                Text("追问")
+                    .font(Theme.secondaryFont)
+                    .foregroundStyle(.secondary)
+            }
+            bodyText(turn.text)
+        }
+    }
+
+    private func bodyText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13.5))
+            .foregroundStyle(.primary)
+            .lineSpacing(6)
+            .multilineTextAlignment(.leading)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

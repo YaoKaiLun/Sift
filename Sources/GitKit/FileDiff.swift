@@ -63,9 +63,60 @@ public struct Hunk: Sendable, Equatable, Identifiable {
     }
 }
 
+public enum ImageSide: Sendable, Equatable {
+    case bytes(Data)
+    case tooLarge(byteCount: Int)
+}
+
+public struct ImageDiff: Sendable, Equatable {
+    public let old: ImageSide?
+    public let new: ImageSide?
+
+    public init(old: ImageSide?, new: ImageSide?) {
+        self.old = old
+        self.new = new
+    }
+
+    public var estimatedBytes: Int {
+        Self.bytes(old) + Self.bytes(new)
+    }
+
+    private static func bytes(_ side: ImageSide?) -> Int {
+        switch side {
+        case .none: 0
+        case .bytes(let data): data.count
+        case .tooLarge: 128
+        }
+    }
+}
+
+public enum ImagePath {
+    private static let extensions: Set<String> = [
+        "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tiff", "tif", "bmp"
+    ]
+
+    public static func matches(_ path: String) -> Bool {
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        return extensions.contains(ext)
+    }
+}
+
+public enum BlobSource: Sendable, Equatable {
+    case worktree
+    case index
+    case head
+}
+
+public enum BlobRead: Sendable, Equatable {
+    case missing
+    case tooLarge(byteCount: Int)
+    case bytes(Data)
+}
+
 public enum DiffContent: Sendable, Equatable {
     case textual([Hunk])
     case binary
+    case image(ImageDiff)
     case modeChangeOnly(oldMode: String, newMode: String)
     /// git 没有输出任何差异。
     case empty

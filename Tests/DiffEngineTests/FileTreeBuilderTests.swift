@@ -81,4 +81,16 @@ final class FileTreeBuilderTests: XCTestCase {
     func testEmptyInputProducesEmptyTree() {
         XCTAssertTrue(FileTreeBuilder.build(from: [], collapsingSingleChildDirectories: true).isEmpty)
     }
+
+    func testDirectoryCollectsDescendantFiles() {
+        let tree = FileTreeBuilder.build(
+            from: [status("src/a.swift"), status("src/nested/b.swift"), status("README.md")],
+            collapsingSingleChildDirectories: false)
+        guard case .directory(_, _, _) = tree[0] else {
+            return XCTFail("第一个节点应是目录")
+        }
+        XCTAssertEqual(tree[0].descendantFiles.map(\.path).sorted(),
+                       ["src/a.swift", "src/nested/b.swift"])
+        XCTAssertEqual(tree[1].descendantFiles.map(\.path), ["README.md"])
+    }
 }

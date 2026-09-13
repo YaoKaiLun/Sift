@@ -75,6 +75,26 @@ final class StageOperationsTests: XCTestCase {
         XCTAssertFalse(file.isUntracked)
     }
 
+    func testStageMultiplePathsInOneCall() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write("a\n", to: "a.txt")
+        try fixture.write("b\n", to: "b.txt")
+        try fixture.commit("initial")
+        try fixture.write("A\n", to: "a.txt")
+        try fixture.write("B\n", to: "b.txt")
+
+        let repo = GitRepository(root: fixture.url)
+        try await repo.stage(paths: ["a.txt", "b.txt"])
+        let status = try await repo.status()
+        XCTAssertEqual(status.filter(\.hasStagedChanges).map(\.path).sorted(), ["a.txt", "b.txt"])
+        XCTAssertTrue(status.allSatisfy { !$0.hasUnstagedChanges })
+
+        try await repo.unstage(paths: ["a.txt", "b.txt"])
+        let unstaged = try await repo.status()
+        XCTAssertEqual(unstaged.filter(\.hasUnstagedChanges).map(\.path).sorted(), ["a.txt", "b.txt"])
+        XCTAssertTrue(unstaged.allSatisfy { !$0.hasStagedChanges })
+    }
+
     func testDeleteUntrackedRemovesFile() async throws {
         let fixture = try FixtureRepo()
         try fixture.write("a\n", to: "a.txt")

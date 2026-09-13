@@ -89,12 +89,93 @@ final class DiffDocumentBuilderTests: XCTestCase {
         XCTAssertTrue(headerText.hasPrefix("@@"))
     }
 
+    func testCodeLinesUseComfortableLineHeight() {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
+        ]))
+        let body = document.hunkHeaders[0].range
+        let style = document.text.attribute(
+            .paragraphStyle, at: body.location + body.length, effectiveRange: nil) as? NSParagraphStyle
+        XCTAssertEqual(style?.minimumLineHeight, Theme.codeLineHeight)
+        XCTAssertEqual(Theme.codeLineHeight, 19)
+    }
+
+    func testHunkHeaderLineIsTallerThanCode() {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
+        ]))
+        let header = document.hunkHeaders[0]
+        let headerStyle = document.text.attribute(
+            .paragraphStyle, at: header.range.location, effectiveRange: nil) as? NSParagraphStyle
+        let bodyStyle = document.text.attribute(
+            .paragraphStyle, at: header.range.location + header.range.length,
+            effectiveRange: nil) as? NSParagraphStyle
+        XCTAssertEqual(headerStyle?.minimumLineHeight, Theme.hunkHeaderLineHeight)
+        XCTAssertEqual(headerStyle?.maximumLineHeight, Theme.hunkHeaderLineHeight)
+        XCTAssertGreaterThan(headerStyle?.minimumLineHeight ?? 0,
+                             bodyStyle?.minimumLineHeight ?? 0)
+        XCTAssertEqual(Theme.hunkHeaderLineHeight, 24)
+    }
+
+    func testHunkHeaderUsesOpaqueChromeAndCenteredBaseline() {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 1, newLineNumber: 1, text: "keep"),
+        ]))
+        let header = document.hunkHeaders[0]
+        let bg = document.text.attribute(
+            .backgroundColor, at: header.range.location, effectiveRange: nil) as? NSColor
+        XCTAssertEqual(bg, NSColor.controlBackgroundColor)
+        let offset = document.text.attribute(
+            .baselineOffset, at: header.range.location, effectiveRange: nil) as? CGFloat
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        XCTAssertEqual(offset, DiffDocumentBuilder.hunkHeaderBaselineOffset(font: font))
+        XCTAssertLessThan(offset ?? 0, 0, "多出来的行高要往下匀，字才在灰条中间")
+    }
+
     func testNewLineNumberUsesLastIntegerField() {
         XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: "   1    2 "), 2)
         XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: "9999 10000 "), 10000)
         XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: "10000 10001 "), 10001)
         XCTAssertEqual(DiffDocumentBuilder.newLineNumber(fromGutter: " 10000 "), 10000)
         XCTAssertNil(DiffDocumentBuilder.newLineNumber(fromGutter: "          "))
+    }
+
+    func testBlameLineNumberUsesOldSideAndSkipsAdditions() {
+        XCTAssertEqual(DiffDocumentBuilder.blameLineNumber(fromGutter: "  33   34 ", marker: " "), 33)
+        XCTAssertEqual(DiffDocumentBuilder.blameLineNumber(fromGutter: "  33      ", marker: "-"), 33)
+        XCTAssertEqual(DiffDocumentBuilder.blameLineNumber(fromGutter: "10000 10001 ", marker: " "), 10000)
+        XCTAssertNil(DiffDocumentBuilder.blameLineNumber(fromGutter: "       34 ", marker: "+"))
+        XCTAssertNil(DiffDocumentBuilder.blameLineNumber(fromGutter: "          ", marker: "-"))
+    }
+
+    func testBlameLineNumberFromBuiltDeletionGutter() {
+        let diff = makeDiff([
+            DiffLine(kind: .deletion, oldLineNumber: 33, newLineNumber: nil, text: "gone"),
+            DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 34, text: "fresh"),
+        ], oldStart: 33, newStart: 33)
+        let document = DiffDocumentBuilder.build(diff, layout: .unified)
+        let ns = document.text.string as NSString
+
+        func gutter(around needle: String) -> (gutter: String, marker: Character) {
+            let code = ns.range(of: needle)
+            let line = ns.lineRange(for: code)
+            var gutter = ""
+            var marker: Character?
+            document.text.enumerateAttributes(in: line, options: []) { attrs, run, _ in
+                let role = attrs[.siftRole] as? String
+                if role == "gutter" {
+                    gutter += ns.substring(with: run)
+                } else if role == "code", marker == nil {
+                    marker = ns.substring(with: run).first
+                }
+            }
+            return (gutter, marker ?? " ")
+        }
+
+        let deleted = gutter(around: "gone")
+        XCTAssertEqual(DiffDocumentBuilder.blameLineNumber(fromGutter: deleted.gutter, marker: deleted.marker), 33)
+        let added = gutter(around: "fresh")
+        XCTAssertNil(DiffDocumentBuilder.blameLineNumber(fromGutter: added.gutter, marker: added.marker))
     }
 
     func testNewLineNumberFromBuiltFiveDigitGutter() {

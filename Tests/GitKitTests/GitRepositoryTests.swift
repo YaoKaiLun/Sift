@@ -133,4 +133,78 @@ final class GitRepositoryTests: XCTestCase {
         XCTAssertNotNil(stats.staged["new.txt"], "git mv 后的新路径应出现在暂存区统计")
         XCTAssertNotNil(stats.unstaged["zzz.txt"], "重命名记录之后的文件不应被吞掉")
     }
+
+    // MARK: - blob 读取
+
+    func testReadBlobFromWorktreeIndexAndHEAD() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write(TestPNG.red, to: "icon.png")
+        try fixture.commit("initial")
+        try fixture.write(TestPNG.blue, to: "icon.png")
+        try fixture.git("add", "icon.png")
+        try fixture.write(TestPNG.red, to: "icon.png")
+
+        let repo = GitRepository(root: fixture.url)
+        let head = await repo.readBlob(path: "icon.png", from: .head)
+        let index = await repo.readBlob(path: "icon.png", from: .index)
+        let worktree = await repo.readBlob(path: "icon.png", from: .worktree)
+        XCTAssertEqual(head, .bytes(TestPNG.red))
+        XCTAssertEqual(index, .bytes(TestPNG.blue))
+        XCTAssertEqual(worktree, .bytes(TestPNG.red))
+    }
+
+    func testReadBlobMissingPathIsMissing() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write("seed\n", to: "a.txt")
+        try fixture.commit("initial")
+
+        let repo = GitRepository(root: fixture.url)
+        let head = await repo.readBlob(path: "gone.png", from: .head)
+        let index = await repo.readBlob(path: "gone.png", from: .index)
+        let worktree = await repo.readBlob(path: "gone.png", from: .worktree)
+        XCTAssertEqual(head, .missing)
+        XCTAssertEqual(index, .missing)
+        XCTAssertEqual(worktree, .missing)
+    }
+
+    func testReadBlobSkipsContentWhenOverSizeLimit() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write(TestPNG.red, to: "icon.png")
+        try fixture.commit("initial")
+
+        let repo = GitRepository(root: fixture.url, maximumBlobBytes: 10)
+        let worktree = await repo.readBlob(path: "icon.png", from: .worktree)
+        let head = await repo.readBlob(path: "icon.png", from: .head)
+        let index = await repo.readBlob(path: "icon.png", from: .index)
+        XCTAssertEqual(worktree, .tooLarge(byteCount: TestPNG.red.count))
+        XCTAssertEqual(head, .tooLarge(byteCount: TestPNG.red.count))
+        XCTAssertEqual(index, .tooLarge(byteCount: TestPNG.red.count))
+    }
+
+    func testLooksBinaryDetectsNULInFirst8KB() {
+        XCTAssertTrue(GitRepository.looksBinary(Data([0x00, 0x01, 0x02])))
+        XCTAssertFalse(GitRepository.looksBinary(Data("hello\n".utf8)))
+        var lateNUL = Data(repeating: 1, count: 8000)
+        lateNUL.append(0)
+        XCTAssertFalse(GitRepository.looksBinary(lateNUL), "git 只看前 8KB")
+    }
+}
+
+enum TestPNG {
+    /// 1×1 红
+    static let red = Data([
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+        0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 144, 119, 83, 222,
+        0, 0, 0, 12, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 0, 0,
+        3, 1, 1, 0, 201, 254, 146, 239, 0, 0, 0, 0, 73, 69, 78, 68,
+        174, 66, 96, 130
+    ])
+    /// 1×1 蓝
+    static let blue = Data([
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+        0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 144, 119, 83, 222,
+        0, 0, 0, 12, 73, 68, 65, 84, 120, 156, 99, 96, 96, 248, 15, 0,
+        1, 3, 1, 0, 8, 137, 194, 236, 0, 0, 0, 0, 73, 69, 78, 68,
+        174, 66, 96, 130
+    ])
 }

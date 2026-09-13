@@ -22,8 +22,13 @@ public enum LoadedDiff: Sendable, Equatable {
     /// 精确值不重要，重要的是大文件占更多份额。
     var estimatedBytes: Int {
         switch self {
-        case .collapsed: 128
-        case .ready(let diff): diff.hunks.reduce(0) { $0 + $1.lines.count * 80 } + 256
+        case .collapsed:
+            return 128
+        case .ready(let diff):
+            if case .image(let image) = diff.content {
+                return image.estimatedBytes + 256
+            }
+            return diff.hunks.reduce(0) { $0 + $1.lines.count * 80 } + 256
         }
     }
 }

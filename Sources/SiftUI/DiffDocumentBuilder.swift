@@ -26,12 +26,22 @@ public struct DiffFileHeader: Sendable, Equatable {
     public let range: NSRange
     public let isPlaceholder: Bool
     public let isCollapsed: Bool
+    public let path: String
+    public let added: Int?
+    public let deleted: Int?
+    public let changeKind: FileChangeKind
 
-    public init(id: String, range: NSRange, isPlaceholder: Bool, isCollapsed: Bool) {
+    public init(id: String, range: NSRange, isPlaceholder: Bool, isCollapsed: Bool,
+                path: String = "", added: Int? = nil, deleted: Int? = nil,
+                changeKind: FileChangeKind = .unmodified) {
         self.id = id
         self.range = range
         self.isPlaceholder = isPlaceholder
         self.isCollapsed = isCollapsed
+        self.path = path
+        self.added = added
+        self.deleted = deleted
+        self.changeKind = changeKind
     }
 }
 
@@ -63,12 +73,35 @@ public struct DiffDocument: @unchecked Sendable {
 public enum DiffDocumentBuilder {
     private static let gutterWidth = 4
 
+    /// 视口顶部落在哪个连续滚动文件头上：取 `range.location ≤ 字符位置` 的最后一个。
+    static func fileID(atCharacter location: Int, in headers: [DiffFileHeader]) -> String? {
+        var current: String?
+        for header in headers where header.range.location <= location {
+            current = header.id
+        }
+        return current ?? headers.first?.id
+    }
+
+    /// hunk 灰条比字高。负的 baseline 把多出来的高度匀到上下，避免字贴顶。
+    static func hunkHeaderBaselineOffset(font: NSFont) -> CGFloat {
+        let natural = font.ascender - font.descender
+        return -((Theme.hunkHeaderLineHeight - natural) / 2)
+    }
+
     /// 从 `.siftRole == "gutter"` 文本取新文件行号：按空白切分，取最后一个整数。
     /// 不要 `prefix(4)`，否则 ≥10000 的行会错位。
     static func newLineNumber(fromGutter gutter: String) -> Int? {
-        gutter.split(whereSeparator: \.isWhitespace)
-            .compactMap { Int($0) }
-            .last
+        gutterIntegers(gutter).last
+    }
+
+    /// blame 对齐 diff **旧侧**行号：上下文与删除行取第一个整数，新增行没有旧侧。
+    static func blameLineNumber(fromGutter gutter: String, marker: Character) -> Int? {
+        guard marker != "+" else { return nil }
+        return gutterIntegers(gutter).first
+    }
+
+    private static func gutterIntegers(_ gutter: String) -> [Int] {
+        gutter.split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
     }
 
     /// 选区按行处理：丢掉 gutter，保留 header/code；分栏对齐空行不进结果。
@@ -184,8 +217,8 @@ public enum DiffDocumentBuilder {
 
         for (index, section) in sections.enumerated() {
             if index > 0 {
-                left.append(separatorLine(paragraph: paragraph, font: font))
-                right?.append(separatorLine(paragraph: paragraph, font: font))
+                left.append(fileBreak(paragraph: paragraph, font: font))
+                right?.append(fileBreak(paragraph: paragraph, font: font))
             }
             appendContinuousSection(
                 section.0, loaded: section.1, layout: layout,
@@ -285,18 +318,25 @@ public enum DiffDocumentBuilder {
         font: NSFont,
         colors: DiffColors
     ) {
-        let header = fileHeaderLine(title: entry.headerTitle, paragraph: paragraph, font: font)
+        let header = fileHeaderLine(for: entry, paragraph: paragraph)
         let headerRange = NSRange(location: left.length, length: header.length)
         left.append(header)
         right?.append(header)
+        let kind = entry.status.isUntracked
+            ? FileChangeKind.untracked
+            : (entry.staged ? entry.status.indexStatus : entry.status.worktreeStatus)
 
         switch loaded {
         case .none:
             fileHeaders.append(DiffFileHeader(
-                id: entry.id, range: headerRange, isPlaceholder: true, isCollapsed: false))
+                id: entry.id, range: headerRange, isPlaceholder: true, isCollapsed: false,
+                path: entry.status.path, added: entry.added, deleted: entry.deleted,
+                changeKind: kind))
         case .collapsed(let reason, _):
             fileHeaders.append(DiffFileHeader(
-                id: entry.id, range: headerRange, isPlaceholder: false, isCollapsed: true))
+                id: entry.id, range: headerRange, isPlaceholder: false, isCollapsed: true,
+                path: entry.status.path, added: entry.added, deleted: entry.deleted,
+                changeKind: kind))
             let note = statusNote(
                 "这是生成文件或体积过大的文件（\(reason.explanation)），已默认折叠。\n",
                 paragraph: paragraph, font: font)
@@ -304,7 +344,9 @@ public enum DiffDocumentBuilder {
             right?.append(note)
         case .ready(let diff):
             fileHeaders.append(DiffFileHeader(
-                id: entry.id, range: headerRange, isPlaceholder: false, isCollapsed: false))
+                id: entry.id, range: headerRange, isPlaceholder: false, isCollapsed: false,
+                path: entry.status.path, added: entry.added, deleted: entry.deleted,
+                changeKind: kind))
             appendReadyDiff(diff, layout: layout, hunkIDPrefix: entry.id + ":",
                             left: left, right: right, hunkHeaders: &hunkHeaders,
                             paragraph: paragraph, font: font, colors: colors)
@@ -337,7 +379,7 @@ public enum DiffDocumentBuilder {
                     id: $0.id,
                     range: NSRange(location: $0.range.location + offset, length: $0.range.length))
             })
-        case .binary:
+        case .binary, .image:
             let note = statusNote("二进制文件\n", paragraph: paragraph, font: font)
             left.append(note)
             right?.append(note)
@@ -353,16 +395,55 @@ public enum DiffDocumentBuilder {
         }
     }
 
-    private static func fileHeaderLine(title: String,
-                                       paragraph: NSParagraphStyle,
-                                       font: NSFont) -> NSAttributedString {
-        NSAttributedString(string: title + "\n", attributes: [
-            .font: font,
-            .foregroundColor: NSColor.secondaryLabelColor,
-            .backgroundColor: NSColor.textColor.withAlphaComponent(0.08),
-            .paragraphStyle: paragraph,
+    private static func fileHeaderLine(for entry: ContinuousDiffEntry,
+                                       paragraph: NSParagraphStyle) -> NSAttributedString {
+        let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        style.minimumLineHeight = 32
+        style.maximumLineHeight = 32
+        let regular = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let bold = NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold)
+        let path = entry.status.path as NSString
+        let name = path.lastPathComponent
+        let dir = path.deletingLastPathComponent
+        let result = NSMutableAttributedString()
+        if !dir.isEmpty {
+            result.append(NSAttributedString(string: dir + "/", attributes: [
+                .font: regular,
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]))
+        }
+        result.append(NSAttributedString(string: name, attributes: [
+            .font: bold,
+            .foregroundColor: NSColor.labelColor,
+        ]))
+        if let added = entry.added, added > 0 {
+            result.append(NSAttributedString(string: "  +\(added)", attributes: [
+                .font: regular,
+                .foregroundColor: NSColor.systemGreen,
+            ]))
+        }
+        if let deleted = entry.deleted, deleted > 0 {
+            result.append(NSAttributedString(string: " −\(deleted)", attributes: [
+                .font: regular,
+                .foregroundColor: NSColor.systemRed,
+            ]))
+        }
+        if entry.status.isUntracked {
+            result.append(NSAttributedString(string: "  New", attributes: [
+                .font: regular,
+                .foregroundColor: NSColor.systemGreen,
+            ]))
+        }
+        result.append(NSAttributedString(string: "\n", attributes: [
+            .font: regular,
+            .foregroundColor: NSColor.labelColor,
+        ]))
+        result.addAttributes([
+            .paragraphStyle: style,
+            .backgroundColor: NSColor.windowBackgroundColor,
             .siftRole: "header",
-        ])
+        ], range: NSRange(location: 0, length: result.length))
+        return result
     }
 
     private static func statusNote(_ text: String,
@@ -409,12 +490,15 @@ public enum DiffDocumentBuilder {
                                    font: NSFont) -> NSAttributedString {
         let heading = hunk.sectionHeading.isEmpty ? "" : "  \(hunk.sectionHeading)"
         let text = "@@ -\(hunk.oldStart),\(hunk.oldCount) +\(hunk.newStart),\(hunk.newCount) @@\(heading)\n"
+        let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        style.minimumLineHeight = Theme.hunkHeaderLineHeight
+        style.maximumLineHeight = Theme.hunkHeaderLineHeight
         return NSAttributedString(string: text, attributes: [
             .font: font,
             .foregroundColor: NSColor.secondaryLabelColor,
-            // quaternarySystemFill 在深色下几乎看不见，hunk 分界必须能一眼看出来。
-            .backgroundColor: NSColor.textColor.withAlphaComponent(0.08),
-            .paragraphStyle: paragraph,
+            .backgroundColor: NSColor.controlBackgroundColor,
+            .baselineOffset: hunkHeaderBaselineOffset(font: font),
+            .paragraphStyle: style,
             .siftRole: "header",
         ])
     }
@@ -481,6 +565,18 @@ public enum DiffDocumentBuilder {
         NSAttributedString(string: "\n", attributes: [
             .font: font,
             .paragraphStyle: paragraph,
+        ])
+    }
+
+    private static func fileBreak(paragraph: NSParagraphStyle, font: NSFont) -> NSAttributedString {
+        let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+        style.minimumLineHeight = 20
+        style.maximumLineHeight = 20
+        return NSAttributedString(string: "\n", attributes: [
+            .font: font,
+            .foregroundColor: NSColor.clear,
+            .paragraphStyle: style,
+            .siftRole: "file-break",
         ])
     }
 

@@ -1,6 +1,10 @@
 .DS_Store
 .build/
 DerivedData/
+dist/
+*.dmg
+__pycache__/
+*.pyc
 xcuserdata/
 *.xcuserstate
 .superpowers/

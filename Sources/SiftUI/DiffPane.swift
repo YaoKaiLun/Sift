@@ -8,16 +8,17 @@ import Highlighter
 struct DiffPane: View {
     @Environment(RepoStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var confirmsDelete = false
-    @State private var filePendingDelete: FileStatus?
     @State private var blameLines: [BlameLine] = []
     @State private var continuousBlame: [String: [BlameLine]] = [:]
     @State private var blamedWorktreePath = ""
+    @State private var visibleContinuousFileID: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            PaneHeader(title: store.selectedFile?.fileName ?? "差异",
-                       subtitle: subtitle,
+            PaneHeader(title: headerTitle,
+                       subtitle: nil,
+                       showsDivider: true,
+                       leading: { headerLeading },
                        trailing: { self.headerTrailing })
 
             content
@@ -25,19 +26,13 @@ struct DiffPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Theme.contentBackground)
-        .confirmationDialog("删除未跟踪文件？", isPresented: $confirmsDelete, titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
-                if let file = filePendingDelete {
-                    Task { await store.deleteUntracked(file: file) }
-                }
-            }
-        } message: {
-            Text("\(filePendingDelete?.path ?? "")\n此操作无法从 git 恢复。")
-        }
         .task(id: store.usesContinuousDiff) {
+            if !store.usesContinuousDiff {
+                visibleContinuousFileID = nil
+            }
             await store.handleBrowseModeChange()
         }
-        .task(id: "\(store.diffEpoch)-\(store.usesSplitDiff)-\(store.usesContinuousDiff)") {
+        .task(id: "\(store.diffEpoch)-\(store.usesContinuousDiff)") {
             if store.usesContinuousDiff {
                 await buildContinuousDocumentIfNeeded()
             } else {
@@ -46,6 +41,11 @@ struct DiffPane: View {
         }
         .task(id: blameTaskID) {
             await loadBlameIfNeeded()
+        }
+        .task(id: store.continuousRevealID) {
+            if let id = store.continuousRevealID {
+                visibleContinuousFileID = id
+            }
         }
     }
 
@@ -88,6 +88,8 @@ struct DiffPane: View {
                 PaneEmptyState(title: "此文件没有文本差异", systemImage: "equal.circle")
             case .binary:
                 PaneEmptyState(title: "二进制文件", systemImage: "doc.badge.gearshape")
+            case .image(let image):
+                ImageDiffView(image: image)
             case .modeChangeOnly(let oldMode, let newMode):
                 PaneEmptyState(title: "只有文件权限变化",
                                systemImage: "lock.rotation",
@@ -119,6 +121,16 @@ struct DiffPane: View {
                              let fileRanges = Dictionary(uniqueKeysWithValues:
                                 document.fileHeaders.map { ($0.id, $0.range) })
                              store.loadContinuousEntries(visibleRange: range, fileRanges: fileRanges)
+                             let headers = document.fileHeaders.map {
+                                 DiffFileHeader(id: $0.id, range: $0.range,
+                                                isPlaceholder: $0.isPlaceholder,
+                                                isCollapsed: $0.isCollapsed)
+                             }
+                             let next = DiffDocumentBuilder.fileID(
+                                atCharacter: range.location, in: headers)
+                             if visibleContinuousFileID != next {
+                                 visibleContinuousFileID = next
+                             }
                          } : nil,
                          preserveVisibleRect: store.usesContinuousDiff && store.continuousPreservesScroll,
                          revealRange: revealRange(in: document),
@@ -127,7 +139,7 @@ struct DiffPane: View {
                              store.expandContinuousCollapsed(id: id)
                          },
                          hunkIsStaged: store.usesContinuousDiff ? { store.hunkIsStaged($0) } : nil,
-                         showsBlame: store.showsBlame,
+                         showsBlame: store.showsBlame && !store.usesContinuousDiff,
                          blameByNewLine: blameLookup,
                          blameByFileID: continuousBlameLookup,
                          loadBlameCommit: { line in
@@ -155,75 +167,93 @@ struct DiffPane: View {
     private var headerTrailing: some View {
         @Bindable var store = store
         HStack(spacing: 8) {
-            if store.selectedFile?.isUntracked == true {
-                Button("删除文件") {
-                    filePendingDelete = store.selectedFile
-                    confirmsDelete = true
-                }
-                    .controlSize(.small)
-                    .disabled(store.isMutating)
+            PlainIconButton(systemName: "doc.on.doc",
+                            isSelected: store.usesContinuousDiff,
+                            help: store.usesContinuousDiff ? "切换为单文件" : "切换为连续滚动") {
+                store.usesContinuousDiff.toggle()
             }
-            if let stats = selectedStats {
-                HStack(spacing: 6) {
-                    Text(store.selectedFileIsStaged ? "已暂存" : "未暂存")
-                        .font(Theme.secondaryFont)
-                        .foregroundStyle(.secondary)
-                    if stats.isBinary {
-                        Text("二进制")
-                            .font(Theme.secondaryFont)
-                            .foregroundStyle(.tertiary)
-                    } else {
-                        if stats.added > 0 {
-                            Text("+\(stats.added)")
-                                .font(Theme.secondaryFont.monospacedDigit())
-                                .foregroundStyle(.green)
-                        }
-                        if stats.deleted > 0 {
-                            Text("−\(stats.deleted)")
-                                .font(Theme.secondaryFont.monospacedDigit())
-                                .foregroundStyle(.red)
-                        }
-                    }
-                }
+            PlainIconButton(systemName: store.showsBlame ? "person.crop.circle.fill" : "person.crop.circle",
+                            isSelected: store.showsBlame,
+                            help: blameHelp) {
+                store.showsBlame.toggle()
             }
-            PlainIconToggle(selection: $store.usesSplitDiff,
-                            falseIcon: "rectangle.split.1x2",
-                            trueIcon: "rectangle.split.2x1",
-                            help: "切换统一视图与分栏视图")
-            PlainIconToggle(selection: $store.usesContinuousDiff,
-                            falseIcon: "doc.text",
-                            trueIcon: "doc.on.doc",
-                            help: "切换单文件与连续滚动")
-            PlainIconToggle(selection: $store.showsBlame,
-                            falseIcon: "person.crop.circle",
-                            trueIcon: "person.crop.circle.fill",
-                            help: "显示或隐藏 blame 侧槽")
+            .disabled(store.usesContinuousDiff || showsImageDiff)
+            .opacity((store.usesContinuousDiff || showsImageDiff) ? 0.4 : 1)
         }
     }
 
-    /// 栏头第二行放目录，文件名单独出来，避免长路径把文件名挤没。
-    private var subtitle: String? {
-        guard let path = store.selectedFile?.path else { return nil }
-        let parts = path.split(separator: "/")
-        guard parts.count > 1 else { return nil }
-        return parts.dropLast().joined(separator: "/")
+    private var showsImageDiff: Bool {
+        if case .ready(let diff) = store.loadedDiff, case .image = diff.content {
+            return true
+        }
+        return false
     }
 
-    private var selectedStats: LineStats? {
-        guard let path = store.selectedFile?.path else { return nil }
-        return store.selectedFileIsStaged
-            ? store.stagedLineStats[path]
-            : store.unstagedLineStats[path]
+    private var blameHelp: String {
+        if store.usesContinuousDiff { return "连续滚动模式下不可用" }
+        if showsImageDiff { return "图片预览不可用" }
+        return store.showsBlame ? "隐藏 blame 侧槽" : "显示 blame 侧槽"
+    }
+
+    @ViewBuilder
+    private var headerLeading: some View {
+        if let kind = headerChangeKind {
+            StatusBadge(kind: kind)
+                .frame(width: Theme.statusColumnWidth)
+                .help(headerChangeHelp(kind))
+        }
+    }
+
+    /// 栏头只放整条路径，文件名不再拆出来。连续滚动跟视口顶部的文件走。
+    private var headerTitle: String {
+        headerFilePath ?? "差异"
+    }
+
+    private var headerFilePath: String? {
+        if store.usesContinuousDiff, let id = visibleContinuousFileID {
+            return Self.path(fromFileID: id)
+        }
+        return store.selectedFile?.path
+    }
+
+    private var headerChangeKind: FileChangeKind? {
+        if store.usesContinuousDiff, let id = visibleContinuousFileID {
+            let staged = id.hasPrefix("s:")
+            let path = Self.path(fromFileID: id)
+            guard let file = store.fileStatuses.first(where: { $0.path == path }) else { return nil }
+            return staged ? file.indexStatus : file.worktreeStatus
+        }
+        guard let file = store.selectedFile else { return nil }
+        return store.selectedFileIsStaged ? file.indexStatus : file.worktreeStatus
+    }
+
+    private func headerChangeHelp(_ kind: FileChangeKind) -> String {
+        switch kind {
+        case .modified: "已修改"
+        case .added: "新增"
+        case .deleted: "已删除"
+        case .renamed: "已重命名"
+        case .copied: "已复制"
+        case .typeChanged: "类型变化"
+        case .unmerged: "冲突"
+        case .untracked: "未跟踪"
+        case .unmodified: ""
+        }
+    }
+
+    private static func path(fromFileID id: String) -> String {
+        if id.hasPrefix("s:") || id.hasPrefix("u:") {
+            return String(id.dropFirst(2))
+        }
+        return id
     }
 
     private var hunkActions: HunkActions? {
-        let enabled = !store.isMutating
         if store.usesContinuousDiff {
             return HunkActions(
                 showsStage: true,
                 showsUnstage: true,
                 showsDiscard: true,
-                isEnabled: enabled,
                 onStage: { id in performHunk(id) { hunk, file, staged in
                     await store.stage(hunk: hunk, file: file, stagedSide: staged)
                 } },
@@ -241,7 +271,6 @@ struct DiffPane: View {
                 showsStage: false,
                 showsUnstage: true,
                 showsDiscard: false,
-                isEnabled: enabled,
                 onStage: { _ in },
                 onUnstage: { id in performHunk(id) { hunk, file, staged in
                     await store.unstage(hunk: hunk, file: file, stagedSide: staged)
@@ -253,7 +282,6 @@ struct DiffPane: View {
             showsStage: true,
             showsUnstage: false,
             showsDiscard: true,
-            isEnabled: enabled,
             onStage: { id in performHunk(id) { hunk, file, staged in
                 await store.stage(hunk: hunk, file: file, stagedSide: staged)
             } },
@@ -279,7 +307,9 @@ struct DiffPane: View {
             hunkHeaders: stored.hunkHeaders.map { DiffHunkHeader(id: $0.id, range: $0.range) },
             fileHeaders: stored.fileHeaders.map {
                 DiffFileHeader(id: $0.id, range: $0.range,
-                               isPlaceholder: $0.isPlaceholder, isCollapsed: $0.isCollapsed)
+                               isPlaceholder: $0.isPlaceholder, isCollapsed: $0.isCollapsed,
+                               path: $0.path, added: $0.added, deleted: $0.deleted,
+                               changeKind: $0.changeKind)
             }
         )
     }
@@ -291,7 +321,9 @@ struct DiffPane: View {
             hunkHeaders: built.hunkHeaders.map { RepoStore.DiffHunkHeader(id: $0.id, range: $0.range) },
             fileHeaders: built.fileHeaders.map {
                 RepoStore.DiffFileHeader(id: $0.id, range: $0.range,
-                                         isPlaceholder: $0.isPlaceholder, isCollapsed: $0.isCollapsed)
+                                         isPlaceholder: $0.isPlaceholder, isCollapsed: $0.isCollapsed,
+                                         path: $0.path, added: $0.added, deleted: $0.deleted,
+                                         changeKind: $0.changeKind)
             }
         )
     }
@@ -303,12 +335,11 @@ struct DiffPane: View {
               case .textual = diff.content else { return }
         let file = store.selectedFile
         let staged = store.selectedFileIsStaged
-        let layout: DiffLayout = store.usesSplitDiff ? .split : .unified
+        let layout: DiffLayout = .unified
         let built = await DiffDocumentBuilder.buildOffMainActor(diff, layout: layout)
         guard store.diffEpoch == epoch,
               store.selectedFile == file,
-              store.selectedFileIsStaged == staged,
-              (store.usesSplitDiff ? DiffLayout.split : DiffLayout.unified) == layout else { return }
+              store.selectedFileIsStaged == staged else { return }
         store.updateDiffDocument(storeDocument(from: built), epoch: epoch)
 
         let path = file?.path ?? ""
@@ -336,7 +367,7 @@ struct DiffPane: View {
     @MainActor
     private func buildContinuousDocumentIfNeeded() async {
         let epoch = store.diffEpoch
-        let layout: DiffLayout = store.usesSplitDiff ? .split : .unified
+        let layout: DiffLayout = .unified
         let plan = store.continuousPlan
         let loaded = store.continuousLoaded
         let sections = plan.map { entry in (entry, loaded[entry.id]) }
@@ -360,7 +391,7 @@ struct DiffPane: View {
     }
 
     private var blameTaskID: String {
-        if !store.showsBlame { return "off" }
+        if !store.showsBlame || store.usesContinuousDiff || showsImageDiff { return "off" }
         let worktree = store.selectedWorktree?.path.path ?? ""
         if store.usesContinuousDiff {
             let ids = store.continuousLoaded.compactMap { id, loaded -> String? in
@@ -384,7 +415,12 @@ struct DiffPane: View {
 
     @MainActor
     private func loadBlameIfNeeded() async {
-        guard store.showsBlame else {
+        guard store.showsBlame, !store.usesContinuousDiff else {
+            blameLines = []
+            continuousBlame = [:]
+            return
+        }
+        if showsImageDiff {
             blameLines = []
             continuousBlame = [:]
             return

@@ -108,6 +108,43 @@ final class PersistedStateTests: XCTestCase {
         XCTAssertEqual(state.explainModel, "")
     }
 
+    /// 未配置时点「解释」只弹出设置，不打开右侧解释面板，也不发请求。
+    @MainActor
+    func testStartExplainWhenUnconfiguredOpensSettingsNotPanel() {
+        let stateURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("sift-state-\(UUID().uuidString)/state.json")
+        let store = RepoStore(
+            stateStore: PersistedStateStore(fileURL: stateURL),
+            keychain: MemoryKeychain())
+        XCTAssertFalse(store.isExplainConfigured)
+
+        store.startExplain(selectedText: "let x = 1", surroundingText: "let x = 1")
+
+        XCTAssertTrue(store.showsExplainSettings, "未配置应弹出模型配置")
+        XCTAssertFalse(store.showsExplainPanel, "未配置不得打开右侧解释面板")
+        XCTAssertNil(store.explainError)
+        XCTAssertNil(store.explainTask, "未配置不得发请求")
+    }
+
+    /// 流还没吐出第一个 token 时必须是思考中，面板才能立刻显示占位而不是空白。
+    @MainActor
+    func testStartExplainIsThinkingUntilFirstChunk() async {
+        let provider = GatedExplainProvider()
+        let store = makeExplainStore(provider: provider)
+
+        store.startExplain(selectedText: "let x = 1", surroundingText: "let x = 1")
+        await provider.waitUntilStarted(count: 1)
+
+        XCTAssertTrue(store.isExplainThinking)
+        XCTAssertTrue(store.explainStreamingText.isEmpty)
+
+        provider.completeNext(["第一段"])
+        await store.explainTask?.value
+
+        XCTAssertFalse(store.isExplainThinking)
+        XCTAssertEqual(store.explainHistory.last?.text, "第一段")
+    }
+
     /// 被替换的解释流取消后不得清空新 stream 的句柄，否则后续切文件无法取消。
     @MainActor
     func testStaleExplainCancelDoesNotNilReplacementTask() async throws {

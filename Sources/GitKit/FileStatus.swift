@@ -37,12 +37,21 @@ public struct FileStatus: Sendable, Equatable, Identifiable, Hashable {
     public var hasStagedChanges: Bool {
         !isUntracked && indexStatus != .unmodified
     }
-    /// 有未暂存的改动，应出现在 Unstaged 分组。
+    /// 有未暂存的改动（不含未跟踪），用于和已暂存对照。
     public var hasUnstagedChanges: Bool {
         !isUntracked && worktreeStatus != .unmodified
+    }
+    /// 工作区分组：未暂存改动和未跟踪文件放在一起，和 SourceTree 一样。
+    public var hasWorkingTreeChanges: Bool {
+        isUntracked || hasUnstagedChanges
     }
     /// 文件名，用于 UI 显示。
     public var fileName: String {
         String(path.split(separator: "/").last ?? "")
+    }
+
+    /// 按相对路径排序，不按增删/未跟踪分组。
+    public static func pathOrder(_ lhs: FileStatus, _ rhs: FileStatus) -> Bool {
+        lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
     }
 }

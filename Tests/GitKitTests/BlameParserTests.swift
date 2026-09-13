@@ -87,31 +87,30 @@ final class BlameParserTests: XCTestCase {
 
     func testBinaryPathReturnsEmpty() async throws {
         let fixture = try FixtureRepo()
-        try fixture.write("placeholder\n", to: "img.bin")
-        try fixture.commit("initial")
         try Data((0..<512).map { UInt8($0 % 256) })
             .write(to: fixture.url.appendingPathComponent("img.bin"))
+        try fixture.commit("initial")
 
         let lines = await GitRepository(root: fixture.url).blame(path: "img.bin", staged: false)
         XCTAssertEqual(lines, [])
     }
 
-    func testStagedBlameUsesIndexContents() async throws {
+    func testBlameUsesHeadSoDeletedLinesKeepTheirAuthor() async throws {
         let fixture = try FixtureRepo()
-        try fixture.write("line1\nline2\nline3\n", to: "a.txt")
+        try fixture.write("keep\ndelete-me\nalso-keep\n", to: "a.txt")
         try fixture.commit("initial")
         let head = try fixture.git("rev-parse", "HEAD")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        try fixture.write("line1\nSTAGED\nline3\n", to: "a.txt")
-        try fixture.git("add", "a.txt")
-        try fixture.write("line1\nWORKTREE\nline3\n", to: "a.txt")
+        try fixture.write("keep\nalso-keep\n", to: "a.txt")
 
-        let staged = await GitRepository(root: fixture.url).blame(path: "a.txt", staged: true)
         let unstaged = await GitRepository(root: fixture.url).blame(path: "a.txt", staged: false)
-        XCTAssertEqual(try XCTUnwrap(staged.first { $0.newLineNumber == 1 }).sha, head)
-        XCTAssertEqual(try XCTUnwrap(unstaged.first { $0.newLineNumber == 1 }).sha, head)
-        XCTAssertTrue(try XCTUnwrap(staged.first { $0.newLineNumber == 2 }).sha.allSatisfy { $0 == "0" })
-        XCTAssertTrue(try XCTUnwrap(unstaged.first { $0.newLineNumber == 2 }).sha.allSatisfy { $0 == "0" })
+        XCTAssertEqual(unstaged.map(\.newLineNumber), [1, 2, 3],
+                       "必须 blame HEAD：工作区已删掉的第 2 行仍应出现")
+        XCTAssertEqual(try XCTUnwrap(unstaged.first { $0.newLineNumber == 2 }).sha, head)
+
+        try fixture.git("add", "a.txt")
+        let staged = await GitRepository(root: fixture.url).blame(path: "a.txt", staged: true)
+        XCTAssertEqual(try XCTUnwrap(staged.first { $0.newLineNumber == 2 }).sha, head)
     }
 
     func testShowCommitReturnsHeaderAndPatch() async throws {

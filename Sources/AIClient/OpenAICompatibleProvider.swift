@@ -44,10 +44,9 @@ public struct OpenAICompatibleProvider: ExplainProvider {
             throw ExplainError.notConfigured
         }
 
-        guard let root = URL(string: base) else {
+        guard let endpoint = Self.chatCompletionsURL(from: base) else {
             throw URLError(.badURL)
         }
-        let endpoint = root.appending(path: "chat/completions")
 
         var urlRequest = URLRequest(url: endpoint)
         urlRequest.httpMethod = "POST"
@@ -57,7 +56,9 @@ public struct OpenAICompatibleProvider: ExplainProvider {
             ChatCompletionRequest(
                 model: modelName,
                 stream: true,
-                messages: Self.messages(for: request)))
+                messages: ExplainPrompt.messages(for: request).map {
+                    ChatCompletionRequest.Message(role: $0.role, content: $0.content)
+                }))
 
         // SSE：只处理 `data: ` 行；`[DONE]` 结束；JSON 缺字段或非 JSON 跳过。
         let (bytes, response) = try await session.bytes(for: urlRequest)
@@ -81,30 +82,19 @@ public struct OpenAICompatibleProvider: ExplainProvider {
         }
     }
 
-    private static func messages(for request: ExplainRequest) -> [ChatCompletionRequest.Message] {
-        var result = [
-            ChatCompletionRequest.Message(
-                role: "user",
-                content: """
-                Explain the selected code.
-
-                File: \(request.path)
-
-                Selection:
-                \(request.selectedText)
-
-                Surrounding context:
-                \(request.surroundingText)
-
-                File diff:
-                \(request.fileDiff)
-                """)
-        ]
-        result.append(contentsOf: request.history.map {
-            ChatCompletionRequest.Message(role: $0.role.rawValue, content: $0.text)
-        })
-        return result
+    /// 根路径或已经带 `/chat/completions` 的完整地址都可以。
+    public static func chatCompletionsURL(from raw: String) -> URL? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        guard !value.isEmpty else { return nil }
+        if value.lowercased().hasSuffix("/chat/completions") {
+            return URL(string: value)
+        }
+        return URL(string: value)?.appending(path: "chat/completions")
     }
+
 }
 
 private struct ChatCompletionRequest: Encodable {

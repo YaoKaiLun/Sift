@@ -11,6 +11,13 @@ public indirect enum FileTreeNode: Sendable, Identifiable {
         case .file(let status): "file:" + status.path
         }
     }
+
+    public var descendantFiles: [FileStatus] {
+        switch self {
+        case .file(let status): [status]
+        case .directory(_, _, let children): children.flatMap(\.descendantFiles)
+        }
+    }
 }
 
 /// 把扁平的改动文件列表转成目录树。纯函数，没有任何副作用。

@@ -19,6 +19,18 @@ final class OpenAICompatibleProviderTests: XCTestCase {
         super.tearDown()
     }
 
+    func testChatCompletionsURLAcceptsRootOrFullPath() {
+        XCTAssertEqual(
+            OpenAICompatibleProvider.chatCompletionsURL(from: "https://api.example.com/v1")?.absoluteString,
+            "https://api.example.com/v1/chat/completions")
+        XCTAssertEqual(
+            OpenAICompatibleProvider.chatCompletionsURL(from: "https://api.example.com/v1/")?.absoluteString,
+            "https://api.example.com/v1/chat/completions")
+        XCTAssertEqual(
+            OpenAICompatibleProvider.chatCompletionsURL(from: "https://api.example.com/v1/chat/completions")?.absoluteString,
+            "https://api.example.com/v1/chat/completions")
+    }
+
     func testStreamsDeltaContentUntilDone() async throws {
         StubURLProtocol.responseBody = Data("""
         data: {"choices":[{"delta":{"content":"Hel"}}]}

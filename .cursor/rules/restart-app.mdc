@@ -1,0 +1,14 @@
+---
+description: After app changes, rebuild Debug Sift and restart it automatically
+alwaysApply: true
+---
+
+# Restart Sift after changes
+
+When a change is meant to be seen in the running macOS app (UI, layout, GitKit, store, packaging of the app binary):
+
+1. Build Debug: `xcodebuild -project App/Sift.xcodeproj -scheme Sift -configuration Debug -derivedDataPath /tmp/SiftBuild -destination 'platform=macOS' build`
+2. Quit any running Sift (`pgrep` / `pkill` the `Sift.app/Contents/MacOS/Sift` process). Do not ask the user to quit first.
+3. Open `/tmp/SiftBuild/Build/Products/Debug/Sift.app` with `open`.
+
+Do this at the end of the turn. Do not only tell the user to reopen the app.
