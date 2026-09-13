@@ -6,10 +6,14 @@ public struct GitRepository: Sendable {
     /// 工作树根目录。对 worktree 而言是该 worktree 自己的目录，不是主仓库目录。
     public let root: URL
     private let runner: GitRunner
+    /// 单侧 blob 超过该体积时不读入内存，返回 `.tooLarge`。
+    public let maximumBlobBytes: Int
 
-    public init(root: URL, runner: GitRunner = GitRunner()) {
+    public init(root: URL, runner: GitRunner = GitRunner(),
+                maximumBlobBytes: Int = 20 * 1024 * 1024) {
         self.root = root
         self.runner = runner
+        self.maximumBlobBytes = maximumBlobBytes
     }
 
     public func status() async throws -> [FileStatus] {
@@ -59,5 +63,157 @@ public struct GitRepository: Sendable {
         let path = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return URL(fileURLWithPath: path)
+    }
+
+    /// 把整个文件加入暂存区。必须拿 index 锁。
+    public func stage(path: String) async throws {
+        try await stage(paths: [path])
+    }
+
+    public func stage(paths: [String]) async throws {
+        guard !paths.isEmpty else { return }
+        _ = try await runner.run(["add", "--"] + paths, in: root, optionalLocks: false)
+    }
+
+    /// 把整个文件从暂存区撤出，工作区内容不动。
+    public func unstage(path: String) async throws {
+        try await unstage(paths: [path])
+    }
+
+    public func unstage(paths: [String]) async throws {
+        guard !paths.isEmpty else { return }
+        _ = try await runner.run(
+            ["restore", "--staged", "--"] + paths, in: root, optionalLocks: false)
+    }
+
+    /// 把 unified patch 喂给 `git apply`。`cached` 只改 index，`reverse` 反向应用。
+    public func apply(patch: String, cached: Bool, reverse: Bool) async throws {
+        var arguments = ["apply"]
+        if cached { arguments.append("--cached") }
+        if reverse { arguments.append("-R") }
+        _ = try await runner.run(
+            arguments, in: root, stdin: Data(patch.utf8), optionalLocks: false)
+    }
+
+    /// 删除未跟踪文件。路径必须在仓库内且 git status 确认为未跟踪；已跟踪路径绝不 `removeItem`。
+    public func deleteUntracked(path: String) async throws {
+        let target = root.appendingPathComponent(path).standardizedFileURL
+        let rootStd = root.standardizedFileURL
+        guard target.path.hasPrefix(rootStd.path + "/") || target == rootStd else {
+            throw GitError.launchFailed("拒绝删除仓库外的路径：\(path)")
+        }
+        let data = try await runner.run(
+            ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--", path], in: root)
+        let statuses = try StatusParser.parse(data)
+        guard statuses.contains(where: { $0.path == path && $0.isUntracked }) else {
+            throw GitError.launchFailed("拒绝删除已跟踪文件：\(path)")
+        }
+        try FileManager.default.removeItem(at: target)
+    }
+
+    /// 只暂存一个 hunk：生成 patch 后 `--cached` 正向 apply。
+    public func stage(hunk: Hunk, path: String, originalPath: String?, kind: PatchFileKind) async throws {
+        let patch = PatchBuilder.build(hunk: hunk, path: path, originalPath: originalPath, kind: kind)
+        try await apply(patch: patch, cached: true, reverse: false)
+    }
+
+    /// 只取消暂存一个 hunk：同一份 patch `--cached -R`。
+    public func unstage(hunk: Hunk, path: String, originalPath: String?, kind: PatchFileKind) async throws {
+        let patch = PatchBuilder.build(hunk: hunk, path: path, originalPath: originalPath, kind: kind)
+        try await apply(patch: patch, cached: true, reverse: true)
+    }
+
+    /// 丢弃工作区一个 hunk：同一份 patch 对工作树 `-R`，不碰 index。
+    public func discard(hunk: Hunk, path: String, originalPath: String?, kind: PatchFileKind) async throws {
+        let patch = PatchBuilder.build(hunk: hunk, path: path, originalPath: originalPath, kind: kind)
+        try await apply(patch: patch, cached: false, reverse: true)
+    }
+
+    /// HEAD 上的 blame，行号对应当前 diff 的旧侧。
+    /// 暂存/未暂存两侧都看提交前的作者；新增行、未跟踪、二进制、失败返回空。
+    public func blame(path: String, staged _: Bool) async -> [BlameLine] {
+        let shown = try? await runner.runAllowingFailure(
+            ["show", "HEAD:\(path)"], in: root, optionalLocks: true)
+        guard let shown, shown.exitCode == 0 else { return [] }
+        if isBinary(shown.stdout) { return [] }
+        let output = try? await runner.runAllowingFailure(
+            ["blame", "-p", "HEAD", "--", path], in: root, optionalLocks: true)
+        guard let output, output.exitCode == 0 else { return [] }
+        return BlameParser.parse(output.stdout)
+    }
+
+    /// commit 的 medium header 与纯 patch。全 0 SHA（尚未提交）返回 nil。
+    public func showCommit(sha: String) async -> (header: String, patch: String)? {
+        guard sha.contains(where: { $0 != "0" }) else { return nil }
+        let headerOut = try? await runner.runAllowingFailure(
+            ["show", "--format=medium", "--no-patch", sha], in: root, optionalLocks: true)
+        let patchOut = try? await runner.runAllowingFailure(
+            ["show", "--format=", sha], in: root, optionalLocks: true)
+        guard let headerOut, headerOut.exitCode == 0,
+              let patchOut, patchOut.exitCode == 0 else { return nil }
+        return (
+            String(decoding: headerOut.stdout, as: UTF8.self),
+            String(decoding: patchOut.stdout, as: UTF8.self)
+        )
+    }
+
+    /// git 把前 8KB 含 NUL 的内容当二进制。
+    public static func looksBinary(_ data: Data) -> Bool {
+        data.prefix(8000).contains(0)
+    }
+
+    /// 读工作区 / index / HEAD 上的原始字节。缺失返回 `.missing`，超限不读内容。
+    public func readBlob(path: String, from source: BlobSource) async -> BlobRead {
+        switch source {
+        case .worktree:
+            return worktreeBlob(path: path)
+        case .index:
+            return await gitBlob(spec: ":\(path)")
+        case .head:
+            return await gitBlob(spec: "HEAD:\(path)")
+        }
+    }
+
+    /// 只读文件开头，给未跟踪文件做 NUL 探测，避免整份拉进内存。
+    public func filePrefix(path: String, maxLength: Int = 8000) -> Data? {
+        let url = root.appendingPathComponent(path)
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        return try? handle.read(upToCount: maxLength)
+    }
+
+    private func worktreeBlob(path: String) -> BlobRead {
+        let url = root.appendingPathComponent(path)
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber else {
+            return .missing
+        }
+        let byteCount = size.intValue
+        if byteCount > maximumBlobBytes {
+            return .tooLarge(byteCount: byteCount)
+        }
+        guard let data = try? Data(contentsOf: url) else { return .missing }
+        return .bytes(data)
+    }
+
+    private func gitBlob(spec: String) async -> BlobRead {
+        let sized = try? await runner.runAllowingFailure(
+            ["cat-file", "-s", spec], in: root, optionalLocks: true)
+        guard let sized, sized.exitCode == 0 else { return .missing }
+        let text = String(decoding: sized.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let byteCount = Int(text) else { return .missing }
+        if byteCount > maximumBlobBytes {
+            return .tooLarge(byteCount: byteCount)
+        }
+        let shown = try? await runner.runAllowingFailure(
+            ["show", spec], in: root, optionalLocks: true)
+        guard let shown, shown.exitCode == 0 else { return .missing }
+        return .bytes(shown.stdout)
+    }
+
+    /// git 把前 8KB 含 NUL 的内容当二进制。
+    private func isBinary(_ data: Data) -> Bool {
+        Self.looksBinary(data)
     }
 }

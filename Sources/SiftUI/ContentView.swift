@@ -5,24 +5,25 @@ import RepoStore
 public struct ContentView: View {
     @Environment(RepoStore.self) private var store
     @State private var showsSidebar = true
-    @State private var sidebarWidth: CGFloat = 220
-    @State private var fileListWidth: CGFloat = 300
     @State private var isFullScreen = false
 
     public init() {}
 
     public var body: some View {
+        @Bindable var store = store
         // 不用 NavigationSplitView：macOS 26 会把它的侧栏渲染成带圆角和外框的
         // 悬浮玻璃面板，那圈边框在子视图里去不掉。三栏自己分。
         HStack(spacing: 0) {
             if showsSidebar {
                 SourceSidebar()
-                    .frame(width: sidebarWidth)
-                SplitDivider(width: $sidebarWidth, range: 180...340)
+                    .frame(width: store.sidebarWidth)
+                SplitDivider(width: sidebarWidthBinding, range: 180...340,
+                             onDragEnded: { store.persist() })
             }
             FileListPane(showsSidebar: $showsSidebar)
-                .frame(width: fileListWidth)
-            SplitDivider(width: $fileListWidth, range: 240...520)
+                .frame(width: store.fileListWidth)
+            SplitDivider(width: fileListWidthBinding, range: 240...520,
+                         onDragEnded: { store.persist() })
             DiffPane()
                 .frame(maxWidth: .infinity)
         }
@@ -45,6 +46,11 @@ public struct ContentView: View {
             .publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
             isFullScreen = false
         }
+        .overlay {
+            if store.showsExplainSettings {
+                settingsOverlay
+            }
+        }
         .preferredColorScheme(store.appearance.colorScheme)
         .alert("出错了",
                isPresented: .constant(store.errorMessage != nil),
@@ -53,6 +59,34 @@ public struct ContentView: View {
         } message: { message in
             Text(message)
         }
+    }
+
+    private var sidebarWidthBinding: Binding<CGFloat> {
+        Binding(
+            get: { CGFloat(store.sidebarWidth) },
+            set: { store.sidebarWidth = Double($0) })
+    }
+
+    private var settingsOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .onTapGesture { store.closeExplainSettings() }
+            SettingsView()
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.22), radius: 28, y: 10)
+        }
+        .onExitCommand { store.closeExplainSettings() }
+    }
+
+    private var fileListWidthBinding: Binding<CGFloat> {
+        Binding(
+            get: { CGFloat(store.fileListWidth) },
+            set: { store.fileListWidth = Double($0) })
     }
 }
 

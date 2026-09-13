@@ -64,4 +64,19 @@ final class DiffCacheTests: XCTestCase {
         XCTAssertNil(gone)
         XCTAssertNotNil(kept)
     }
+
+    func testRemovePathClearsBothSidesAndLeavesOthers() async {
+        let cache = DiffCache()
+        let wt = URL(fileURLWithPath: "/w")
+        await cache.insert(diff("a.txt"), for: DiffCacheKey(worktreePath: wt, filePath: "a.txt", staged: false))
+        await cache.insert(diff("a.txt"), for: DiffCacheKey(worktreePath: wt, filePath: "a.txt", staged: true))
+        await cache.insert(diff("b.txt"), for: DiffCacheKey(worktreePath: wt, filePath: "b.txt", staged: false))
+        await cache.remove(inWorktree: wt, filePath: "a.txt")
+        let unstagedA = await cache.value(for: DiffCacheKey(worktreePath: wt, filePath: "a.txt", staged: false))
+        let stagedA = await cache.value(for: DiffCacheKey(worktreePath: wt, filePath: "a.txt", staged: true))
+        let unstagedB = await cache.value(for: DiffCacheKey(worktreePath: wt, filePath: "b.txt", staged: false))
+        XCTAssertNil(unstagedA)
+        XCTAssertNil(stagedA)
+        XCTAssertNotNil(unstagedB)
+    }
 }

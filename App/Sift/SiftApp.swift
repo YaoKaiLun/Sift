@@ -67,6 +67,12 @@ struct SiftApp: App {
                     Text("深色").tag(AppearancePreference.dark)
                 }
             }
+            CommandGroup(replacing: .appSettings) {
+                Button("模型配置…") {
+                    store.openExplainSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }

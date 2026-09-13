@@ -7,6 +7,7 @@ import SwiftUI
 struct SplitDivider: View {
     @Binding var width: CGFloat
     let range: ClosedRange<CGFloat>
+    var onDragEnded: (() -> Void)? = nil
 
     @State private var isHovering = false
     @State private var isDragging = false
@@ -55,6 +56,7 @@ struct SplitDivider: View {
                 startWidth = nil
                 isDragging = false
                 syncCursor()
+                onDragEnded?()
             }
     }
 

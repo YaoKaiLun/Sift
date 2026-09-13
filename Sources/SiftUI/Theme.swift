@@ -8,7 +8,7 @@ public enum Theme {
     public static let codeFont = Font.system(size: 12, design: .monospaced)
     public static let secondaryFont = Font.system(size: 11)
     public static let headerFont = Font.system(size: 13, weight: .semibold)
-    public static let sectionFont = Font.system(size: 10, weight: .semibold)
+    public static let sectionFont = Font.system(size: 11, weight: .semibold)
     /// 侧边栏的仓库名是一级信息，不能和分组标签一样小。
     public static let repositoryFont = Font.system(size: 13, weight: .semibold)
     /// 文件列表里是整条相对路径，比普通界面文字小一号才不挤。
@@ -37,15 +37,22 @@ public enum Theme {
     /// 侧边栏比文件列表松一档：那里条目少，挤在一起反而难扫。
     public static let sidebarRowHeight: CGFloat = 30
     public static let sidebarGroupGap: CGFloat = 12
-    public static let sectionTopGap: CGFloat = 10
+    public static let sectionTopGap: CGFloat = 12
     public static let horizontalPadding: CGFloat = 10
     public static let rowSpacing: CGFloat = 6
-    /// 状态字母/图标所在的左侧固定栏。
-    public static let statusColumnWidth: CGFloat = 16
+    /// 文件行复选框所在的左侧固定栏。
+    public static let checkboxColumnWidth: CGFloat = 18
+    /// 状态色块所在的左侧固定栏。比色块宽 2pt，选中与否都同一条竖线。
+    public static let statusColumnWidth: CGFloat = 20
+    /// 文件状态字母色块。比栏宽略窄，才能在栏里居中。
+    public static let statusChipSize = CGSize(width: 18, height: 16)
+    public static let statusChipCornerRadius: CGFloat = 4
     /// +/− 所在的右侧固定栏。
     public static let statsColumnWidth: CGFloat = 58
-    /// 树视图每层缩进。
-    public static let indentWidth: CGFloat = 12
+    /// 树视图每层缩进。只缩箭头和文件名，复选框始终一列。
+    public static let indentWidth: CGFloat = 16
+    /// 树视图展开箭头槽，文件行同样占位才能和目录名对齐。
+    public static let disclosureColumnWidth: CGFloat = 12
     /// 选中行左侧的强调条宽度。
     public static let selectionBarWidth: CGFloat = 2
 
@@ -81,5 +88,7 @@ public enum Theme {
     public static let deletionGutter = Color("DiffDeletionGutter", bundle: .module)
 
     /// 行高。行号槽与代码行必须用同一个值，否则两栏会错位。
-    public static let codeLineHeight: CGFloat = 17
+    public static let codeLineHeight: CGFloat = 19
+    /// hunk 灰条比代码行高一截，字上下才有呼吸。
+    public static let hunkHeaderLineHeight: CGFloat = 24
 }

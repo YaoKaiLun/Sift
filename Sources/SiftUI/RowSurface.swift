@@ -39,27 +39,34 @@ extension View {
     }
 }
 
-/// 分组标题行。与普通行共用左侧栏宽度，标题才会和文件名对齐。
+/// 分组标题行。通栏底、和文件名错开，组与组才分得开。
 struct SectionHeaderRow: View {
     let title: String
     var count: Int?
     var isFirst: Bool = false
 
     var body: some View {
-        HStack(spacing: Theme.rowSpacing) {
-            Color.clear.frame(width: Theme.statusColumnWidth)
-            Text(title)
-                .font(Theme.sectionFont)
-                .foregroundStyle(.tertiary)
-            if let count {
-                Text("\(count)")
-                    .font(Theme.sectionFont.monospacedDigit())
-                    .foregroundStyle(.quaternary)
+        VStack(spacing: 0) {
+            if !isFirst {
+                Rectangle()
+                    .fill(Theme.dividerColor)
+                    .frame(height: 1)
+                    .padding(.top, Theme.sectionTopGap)
             }
-            Spacer(minLength: 0)
+            HStack(spacing: Theme.rowSpacing) {
+                Text(title)
+                    .font(Theme.sectionFont)
+                    .foregroundStyle(.secondary)
+                if let count {
+                    Text("\(count)")
+                        .font(Theme.sectionFont.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Theme.horizontalPadding)
+            .frame(height: Theme.sectionHeaderHeight)
+            .background(Color.primary.opacity(0.08))
         }
-        .padding(.horizontal, Theme.horizontalPadding)
-        .frame(height: Theme.sectionHeaderHeight)
-        .padding(.top, isFirst ? 0 : Theme.sectionTopGap)
     }
 }

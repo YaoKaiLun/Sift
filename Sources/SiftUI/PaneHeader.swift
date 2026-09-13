@@ -24,6 +24,8 @@ struct PaneHeader<Leading: View, Trailing: View>: View {
                         .font(Theme.headerFont)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
+                        .truncationMode(.head)
+                        .layoutPriority(1)
                 }
                 if let subtitle {
                     Text(subtitle)
@@ -31,6 +33,7 @@ struct PaneHeader<Leading: View, Trailing: View>: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                        .layoutPriority(0)
                 }
                 Spacer(minLength: 8)
                 trailing

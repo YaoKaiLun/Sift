@@ -22,8 +22,13 @@ public enum LoadedDiff: Sendable, Equatable {
     /// 精确值不重要，重要的是大文件占更多份额。
     var estimatedBytes: Int {
         switch self {
-        case .collapsed: 128
-        case .ready(let diff): diff.hunks.reduce(0) { $0 + $1.lines.count * 80 } + 256
+        case .collapsed:
+            return 128
+        case .ready(let diff):
+            if case .image(let image) = diff.content {
+                return image.estimatedBytes + 256
+            }
+            return diff.hunks.reduce(0) { $0 + $1.lines.count * 80 } + 256
         }
     }
 }
@@ -76,6 +81,12 @@ public actor DiffCache {
     /// 某个 worktree 的文件发生变化时，只清该 worktree 的缓存。
     public func removeAll(inWorktree path: URL) {
         let doomed = entries.keys.filter { $0.worktreePath == path }
+        for key in doomed { remove(key) }
+    }
+
+    /// 写操作后只清该路径 staged 与 unstaged 两侧，其它文件的缓存留下。
+    public func remove(inWorktree path: URL, filePath: String) {
+        let doomed = entries.keys.filter { $0.worktreePath == path && $0.filePath == filePath }
         for key in doomed { remove(key) }
     }
 

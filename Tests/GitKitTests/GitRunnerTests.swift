@@ -115,4 +115,69 @@ final class GitRunnerTests: XCTestCase {
         let elapsed = ContinuousClock.now - started
         XCTAssertLessThan(elapsed, Duration.seconds(2), "取消后应在约 2 秒内返回")
     }
+
+    func testStdinIsHashedByGit() async throws {
+        let repo = try FixtureRepo()
+        let runner = GitRunner()
+        let data = try await runner.run(
+            ["hash-object", "--stdin"], in: repo.url,
+            stdin: Data("hello\n".utf8))
+        let hash = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(hash.count, 40)
+    }
+
+    func testStdinApplyStagesHunk() async throws {
+        let repo = try FixtureRepo()
+        try repo.write("line1\nline2\nline3\n", to: "a.txt")
+        try repo.commit("initial")
+        try repo.write("line1\nCHANGED\nline3\n", to: "a.txt")
+
+        let diffData = try await GitRunner().run(
+            ["diff", "--no-color", "-U3", "--", "a.txt"], in: repo.url)
+        let diff = DiffParser.parse(diffData, path: "a.txt")
+        let hunk = try XCTUnwrap(diff.hunks.first)
+        let patch = """
+        diff --git a/a.txt b/a.txt
+        --- a/a.txt
+        +++ b/a.txt
+        \(hunk.patchText)
+        """
+
+        try repo.git("checkout", "--", "a.txt")
+        _ = try await GitRunner().run(
+            ["apply", "--cached"], in: repo.url,
+            stdin: Data(patch.utf8), optionalLocks: false)
+
+        let staged = try await GitRunner().run(
+            ["diff", "--cached", "--name-only"], in: repo.url)
+        XCTAssertTrue(String(decoding: staged, as: UTF8.self).contains("a.txt"))
+    }
+
+    /// git status 不读 stdin。写满管道后进程关掉写端，FileHandle.write 会因 EPIPE 崩进程。
+    func testStdinWriteDoesNotCrashWhenGitClosesPipe() async throws {
+        let repo = try FixtureRepo()
+        let runner = GitRunner()
+        let payload = Data(repeating: 0x61, count: 256 * 1024)
+        let output = try await runner.runAllowingFailure(
+            ["status", "--porcelain"], in: repo.url, stdin: payload)
+        XCTAssertEqual(output.exitCode, 0)
+    }
+
+    func testFailedApplyWithClosedStdinDoesNotCrash() async throws {
+        let repo = try FixtureRepo()
+        try repo.write("a\n", to: "a.txt")
+        try repo.commit("initial")
+        let runner = GitRunner()
+        let junk = Data("not a patch\n".utf8) + Data(repeating: 0x41, count: 200_000)
+        do {
+            _ = try await runner.run(
+                ["apply", "--cached"], in: repo.url, stdin: junk, optionalLocks: false)
+            XCTFail("期望 nonZeroExit")
+        } catch let error as GitError {
+            guard case .nonZeroExit = error else {
+                return XCTFail("期望 nonZeroExit，实际是 \(error)")
+            }
+        }
+    }
 }

@@ -31,6 +31,10 @@ public actor DiffEngine {
         await cache.removeAll(inWorktree: worktreePath)
     }
 
+    public func invalidate(worktreePath: URL, filePath: String) async {
+        await cache.remove(inWorktree: worktreePath, filePath: filePath)
+    }
+
     private func load(status: FileStatus, staged: Bool,
                       from repository: GitRepository,
                       ignoringCollapse: Bool) async throws -> LoadedDiff {
@@ -52,7 +56,9 @@ public actor DiffEngine {
         }
 
         let diff: FileDiff
-        if status.isUntracked {
+        if ImagePath.matches(status.path) {
+            diff = await imageDiff(status: status, staged: staged, from: repository)
+        } else if status.isUntracked {
             if !ignoringCollapse,
                let size = fileSize(path: status.path, in: repository),
                let reason = detector.reason(forPath: status.path,
@@ -61,13 +67,19 @@ public actor DiffEngine {
                 await cache.insert(result, for: key)
                 return result
             }
-            diff = try await untrackedDiff(status: status, repository: repository,
-                                           ignoringCollapse: ignoringCollapse)
+            if let prefix = repository.filePrefix(path: status.path),
+               GitRepository.looksBinary(prefix) {
+                diff = FileDiff(path: status.path, originalPath: nil, content: .binary)
+            } else {
+                diff = try await untrackedDiff(status: status, repository: repository,
+                                               ignoringCollapse: ignoringCollapse)
+            }
         } else {
             diff = try await repository.diff(path: status.path, staged: staged)
         }
 
         // 内容读出来之后才知道真实体量，这里再判一次行数与字节数。
+        // 图片没有 hunk，estimatedByteCount 为 0，不会被 500KB 文本规则误伤。
         if !ignoringCollapse {
             let lineCount = diff.hunks.reduce(0) { $0 + $1.lines.count }
             if let reason = detector.reason(forPath: status.path,
@@ -82,6 +94,55 @@ public actor DiffEngine {
         let result = LoadedDiff.ready(diff)
         await cache.insert(result, for: key)
         return result
+    }
+
+    private func imageDiff(status: FileStatus, staged: Bool,
+                           from repository: GitRepository) async -> FileDiff {
+        let refs = blobRefs(status: status, staged: staged)
+        let old = await imageSide(refs.old, from: repository)
+        let new = await imageSide(refs.new, from: repository)
+        let content: DiffContent = (old == nil && new == nil)
+            ? .binary
+            : .image(ImageDiff(old: old, new: new))
+        return FileDiff(path: status.path, originalPath: status.originalPath, content: content)
+    }
+
+    private func imageSide(_ ref: (BlobSource, String)?,
+                           from repository: GitRepository) async -> ImageSide? {
+        guard let ref else { return nil }
+        switch await repository.readBlob(path: ref.1, from: ref.0) {
+        case .missing: return nil
+        case .tooLarge(let count): return .tooLarge(byteCount: count)
+        case .bytes(let data): return .bytes(data)
+        }
+    }
+
+    /// 按当前选中的 staged 侧决定旧/新 blob。
+    private func blobRefs(status: FileStatus, staged: Bool)
+        -> (old: (BlobSource, String)?, new: (BlobSource, String)?) {
+        let path = status.path
+        let original = status.originalPath ?? path
+        if status.isUntracked {
+            return (nil, (.worktree, path))
+        }
+        if staged {
+            switch status.indexStatus {
+            case .added:
+                return (nil, (.index, path))
+            case .deleted:
+                return ((.head, original), nil)
+            default:
+                return ((.head, original), (.index, path))
+            }
+        }
+        switch status.worktreeStatus {
+        case .deleted:
+            return ((.index, original), nil)
+        case .added:
+            return (nil, (.worktree, path))
+        default:
+            return ((.index, original), (.worktree, path))
+        }
     }
 
     /// 未跟踪文件在 git 眼里没有 diff，这里按"整个文件都是新增"合成一个。
