@@ -81,12 +81,19 @@ struct SourceSidebar: View {
     private func repositoryRow(_ repository: RepositoryEntry, isFirst: Bool) -> some View {
         let id = "repo:\(repository.root.path)"
         let collapsed = collapsedRoots.contains(repository.root)
+        let hovering = hoveredRow == id
         return HStack(spacing: Theme.rowSpacing) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .rotationEffect(.degrees(collapsed ? 0 : 90))
-                .frame(width: Theme.statusColumnWidth, alignment: .center)
+            ZStack {
+                Image(systemName: "folder")
+                    .font(.system(size: 11))
+                    .opacity(hovering ? 0 : 1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                    .opacity(hovering ? 1 : 0)
+            }
+            .foregroundStyle(.secondary)
+            .frame(width: Theme.statusColumnWidth, alignment: .center)
             Text(repository.name)
                 .font(Theme.repositoryFont)
                 .foregroundStyle(.primary)
@@ -111,7 +118,7 @@ struct SourceSidebar: View {
         let id = "wt:\(worktree.path.path)"
         let selected = store.selectedWorktree?.path == worktree.path
         return HStack(spacing: Theme.rowSpacing) {
-            Image(systemName: worktree.isMain ? "folder" : "arrow.triangle.branch")
+            Image(systemName: "arrow.triangle.branch")
                 .font(.system(size: 11))
                 .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 .frame(width: Theme.statusColumnWidth, alignment: .center)
