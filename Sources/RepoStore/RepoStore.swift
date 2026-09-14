@@ -123,6 +123,34 @@ public final class RepoStore {
 
     public var fileListWidth: Double
 
+    public var hidesFilteredFiles: Bool {
+        didSet {
+            persist()
+            applyVisibleFileFilter()
+        }
+    }
+
+    public var fileFilterPatterns: [String] {
+        didSet {
+            persist()
+            applyVisibleFileFilter()
+        }
+    }
+
+    /// 当前选中 worktree 上未推送到上游的 commit。无上游时为空。
+    public private(set) var unpushedCommits: [CommitInfo] = []
+    public private(set) var hasUpstream = false
+    public private(set) var selectedCommit: CommitInfo?
+    public private(set) var commitParentSHA: String?
+    /// 工作区改动文件数，供侧栏徽章使用；阅读 commit 时不改这个数。
+    public private(set) var workingTreeFileCount = 0
+
+    public var visibleFileStatuses: [FileStatus] {
+        FileFilter.hiding(fileStatuses, path: \.path,
+                          enabled: hidesFilteredFiles,
+                          patterns: fileFilterPatterns)
+    }
+
     public var usesContinuousDiff: Bool {
         didSet {
             if usesContinuousDiff, showsBlame {
@@ -204,6 +232,8 @@ public final class RepoStore {
         self.explainModel = loaded.explainModel
         self.sidebarWidth = loaded.sidebarWidth
         self.fileListWidth = loaded.fileListWidth
+        self.hidesFilteredFiles = loaded.hidesFilteredFiles
+        self.fileFilterPatterns = loaded.fileFilterPatterns
         self.usesContinuousDiff = loaded.usesContinuousDiff
         self.showsBlame = loaded.usesContinuousDiff ? false : loaded.showsBlame
         do {
@@ -249,6 +279,7 @@ public final class RepoStore {
             continuousRevealID = nil
             setLoadedDiff(nil)
             watcher = nil
+            resetUnpushedList()
             resetExplainConversation(keepingPanel: false)
         }
         persist()
@@ -257,7 +288,12 @@ public final class RepoStore {
     // MARK: - 选择
 
     public func select(worktree: Worktree) async {
-        guard selectedWorktree != worktree else { return }
+        if selectedWorktree == worktree {
+            if selectedCommit != nil {
+                await clearSelectedCommit()
+            }
+            return
+        }
         // 切换 worktree：取消旧的所有在途工作。
         fileListTask?.cancel()
         diffTask?.cancel()
@@ -276,34 +312,66 @@ public final class RepoStore {
         fileStatuses = []
         stagedLineStats = [:]
         unstagedLineStats = [:]
+        workingTreeFileCount = 0
+        resetUnpushedList()
         persist()
 
         startWatching(worktree)
         await refreshFileList()
     }
 
-    public static func fileSelectionID(path: String, staged: Bool) -> String {
-        "\(staged ? "s" : "u"):\(path)"
+    public static func fileSelectionID(path: String, staged: Bool, commitSHA: String? = nil) -> String {
+        if let commitSHA {
+            return "c:\(commitSHA):\(path)"
+        }
+        return "\(staged ? "s" : "u"):\(path)"
+    }
+
+    public static func parseFileSelectionID(_ id: String) -> (path: String, staged: Bool, commitSHA: String?)? {
+        if id.hasPrefix("c:") {
+            let rest = id.dropFirst(2)
+            guard let colon = rest.firstIndex(of: ":") else { return nil }
+            let sha = String(rest[..<colon])
+            let path = String(rest[rest.index(after: colon)...])
+            guard !sha.isEmpty, !path.isEmpty else { return nil }
+            return (path, false, sha)
+        }
+        if id.hasPrefix("s:") {
+            return (String(id.dropFirst(2)), true, nil)
+        }
+        if id.hasPrefix("u:") {
+            return (String(id.dropFirst(2)), false, nil)
+        }
+        return nil
     }
 
     public func isFileSelected(_ file: FileStatus, staged: Bool) -> Bool {
-        selectedFileIDs.contains(Self.fileSelectionID(path: file.path, staged: staged))
+        selectedFileIDs.contains(currentFileSelectionID(path: file.path, staged: staged))
+    }
+
+    private func currentFileSelectionID(path: String, staged: Bool) -> String {
+        Self.fileSelectionID(path: path, staged: staged, commitSHA: selectedCommit?.sha)
     }
 
     public func select(file: FileStatus, staged: Bool, replacingSelection: Bool = true) async {
         if replacingSelection {
-            let id = Self.fileSelectionID(path: file.path, staged: staged)
+            let id = currentFileSelectionID(path: file.path, staged: staged)
             selectedFileIDs = [id]
             selectionAnchorID = id
         }
+        let commitSHA = selectedCommit?.sha
+        let parent = commitParentSHA
+        let side: DiffSide = commitSHA.map { .commit(sha: $0) } ?? .workingTree(staged: staged)
         if usesContinuousDiff {
-            let fileChanged = selectedFile?.path != file.path || selectedFileIsStaged != staged
+            let fileChanged = selectedFile?.path != file.path
+                || selectedFileIsStaged != staged
+                || selectedCommit?.sha != commitSHA
             if fileChanged {
                 resetExplainConversation(keepingPanel: true)
             }
             selectedFile = file
             selectedFileIsStaged = staged
-            continuousRevealID = "\(staged ? "s" : "u"):\(file.path)"
+            continuousRevealID = currentFileSelectionID(path: file.path, staged: staged)
             return
         }
 
@@ -324,12 +392,14 @@ public final class RepoStore {
 
         diffTask = Task { [weak self] in
             do {
-                let diff = try await engine.load(status: file, staged: staged, from: repository)
+                let diff = try await engine.load(
+                    status: file, side: side, from: repository, parent: parent)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard let self,
                           self.selectedFile == file,
-                          self.selectedFileIsStaged == staged else { return }
+                          self.selectedFileIsStaged == staged,
+                          self.selectedCommit?.sha == commitSHA else { return }
                     self.setLoadedDiff(diff)
                 }
             } catch {
@@ -340,8 +410,69 @@ public final class RepoStore {
         await diffTask?.value
     }
 
+    public func select(commit: CommitInfo) async {
+        guard selectedWorktree != nil else { return }
+        guard selectedCommit?.sha != commit.sha else { return }
+        selectedCommit = commit
+        commitParentSHA = nil
+        selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
+        setLoadedDiff(nil)
+        cancelContinuousExpands()
+        continuousPlan = []
+        continuousLoaded = [:]
+        continuousRevealID = nil
+        continuousPreservesScroll = false
+        resetExplainConversation(keepingPanel: true)
+        await refreshFileList()
+    }
+
+    public func clearSelectedCommit() async {
+        guard selectedCommit != nil else { return }
+        clearCommitReadingState()
+        selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
+        setLoadedDiff(nil)
+        cancelContinuousExpands()
+        continuousPlan = []
+        continuousLoaded = [:]
+        continuousRevealID = nil
+        continuousPreservesScroll = false
+        resetExplainConversation(keepingPanel: true)
+        await refreshFileList()
+    }
+
+    public func selectAdjacentFile(delta: Int, extending: Bool, orderedIDs: [String]) async {
+        guard !orderedIDs.isEmpty else { return }
+        let currentID: String?
+        if let file = selectedFile {
+            currentID = currentFileSelectionID(path: file.path, staged: selectedFileIsStaged)
+        } else {
+            currentID = selectionAnchorID
+        }
+
+        let targetID: String
+        if let currentID, let index = orderedIDs.firstIndex(of: currentID) {
+            let next = index + delta
+            guard orderedIDs.indices.contains(next) else { return }
+            targetID = orderedIDs[next]
+        } else {
+            targetID = delta >= 0 ? orderedIDs[0] : orderedIDs[orderedIDs.count - 1]
+        }
+
+        guard let parts = Self.parseFileSelectionID(targetID),
+              let file = fileStatuses.first(where: { $0.path == parts.path }) else { return }
+        if extending {
+            await selectFileRange(orderedIDs: orderedIDs, to: targetID, file: file, staged: parts.staged)
+        } else {
+            await select(file: file, staged: parts.staged)
+        }
+    }
+
     public func toggleFileInSelection(_ file: FileStatus, staged: Bool) async {
-        let id = Self.fileSelectionID(path: file.path, staged: staged)
+        let id = currentFileSelectionID(path: file.path, staged: staged)
         if selectedFileIDs.contains(id) {
             guard selectedFileIDs.count > 1 else { return }
             selectedFileIDs.remove(id)
@@ -351,7 +482,7 @@ public final class RepoStore {
             return
         }
         if selectedFileIDs.isEmpty, let selected = selectedFile {
-            selectedFileIDs.insert(Self.fileSelectionID(path: selected.path, staged: selectedFileIsStaged))
+            selectedFileIDs.insert(currentFileSelectionID(path: selected.path, staged: selectedFileIsStaged))
         }
         selectedFileIDs.insert(id)
         selectionAnchorID = id
@@ -378,9 +509,9 @@ public final class RepoStore {
             setLoadedDiff(nil)
             return
         }
-        let staged = nextID.hasPrefix("s:")
-        let path = String(nextID.dropFirst(2))
-        guard let next = fileStatuses.first(where: { $0.path == path }) else { return }
+        guard let parts = Self.parseFileSelectionID(nextID),
+              let next = fileStatuses.first(where: { $0.path == parts.path }) else { return }
+        let staged = parts.staged
         selectionAnchorID = nextID
         await select(file: next, staged: staged, replacingSelection: false)
     }
@@ -388,24 +519,28 @@ public final class RepoStore {
     /// 用户在折叠占位条上点了"仍要查看"。
     public func expandCollapsedDiff() async {
         if usesContinuousDiff, let file = selectedFile {
-            expandContinuousCollapsed(id: "\(selectedFileIsStaged ? "s" : "u"):\(file.path)")
+            expandContinuousCollapsed(id: currentFileSelectionID(path: file.path, staged: selectedFileIsStaged))
             return
         }
         diffTask?.cancel()
         guard let file = selectedFile, let worktree = selectedWorktree else { return }
         let staged = selectedFileIsStaged
+        let commitSHA = selectedCommit?.sha
+        let parent = commitParentSHA
+        let side: DiffSide = commitSHA.map { .commit(sha: $0) } ?? .workingTree(staged: staged)
         let repository = GitRepository(root: worktree.path)
         let engine = self.engine
 
         diffTask = Task { [weak self] in
             do {
                 let diff = try await engine.loadIgnoringCollapse(
-                    status: file, staged: staged, from: repository)
+                    status: file, side: side, from: repository, parent: parent)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard let self,
                           self.selectedFile == file,
                           self.selectedFileIsStaged == staged,
+                          self.selectedCommit?.sha == commitSHA,
                           self.selectedWorktree == worktree else { return }
                     self.setLoadedDiff(diff)
                 }
@@ -568,6 +703,53 @@ public final class RepoStore {
                 if invalidateAllCachedDiffs {
                     await engine.invalidate(worktreePath: worktree.path)
                 }
+
+                let unpushed = try await repository.unpushedCommits()
+                guard !Task.isCancelled else { return }
+
+                let commitSHA: String? = await MainActor.run {
+                    guard let self, self.selectedWorktree == worktree else { return nil }
+                    self.hasUpstream = unpushed != nil
+                    self.unpushedCommits = unpushed ?? []
+                    if let sha = self.selectedCommit?.sha,
+                       !self.unpushedCommits.contains(where: { $0.sha == sha }) {
+                        self.abandonSelectedCommit()
+                    }
+                    return self.selectedCommit?.sha
+                }
+
+                if let sha = commitSHA {
+                    async let filesResult = repository.commitFiles(sha: sha)
+                    let parent = await repository.commitParent(sha: sha)
+                    let files = try await filesResult
+                    guard !Task.isCancelled else { return }
+
+                    let reload = await MainActor.run { () -> (file: FileStatus, staged: Bool)? in
+                        guard let self, self.selectedWorktree == worktree,
+                              self.selectedCommit?.sha == sha else { return nil }
+                        self.commitParentSHA = parent
+                        self.fileStatuses = files.files
+                        self.stagedLineStats = files.lineStats
+                        self.unstagedLineStats = [:]
+                        self.isLoadingFileList = false
+                        if self.usesContinuousDiff {
+                            if invalidateAllCachedDiffs {
+                                self.invalidateContinuousLoaded()
+                            }
+                            self.reconcileContinuousSelection(with: self.visibleFileStatuses)
+                            self.rebuildContinuousPlan(preservesScroll: self.diffDocument != nil)
+                            return nil
+                        }
+                        return self.reconcileSelection(with: self.visibleFileStatuses)
+                    }
+
+                    guard !Task.isCancelled else { return }
+                    if let reload {
+                        await self?.select(file: reload.file, staged: reload.staged)
+                    }
+                    return
+                }
+
                 // status 与 numstat 并发发起——两者互不依赖，串行等待是白白浪费预算。
                 async let statusResult = repository.status()
                 async let statsResult = repository.lineStats()
@@ -580,16 +762,17 @@ public final class RepoStore {
                     self.fileStatuses = statuses
                     self.stagedLineStats = stats.staged
                     self.unstagedLineStats = stats.unstaged
+                    self.workingTreeFileCount = statuses.count
                     self.isLoadingFileList = false
                     if self.usesContinuousDiff {
                         if invalidateAllCachedDiffs {
                             self.invalidateContinuousLoaded()
                         }
-                        self.reconcileContinuousSelection(with: statuses)
+                        self.reconcileContinuousSelection(with: self.visibleFileStatuses)
                         self.rebuildContinuousPlan(preservesScroll: self.diffDocument != nil)
                         return nil
                     }
-                    return self.reconcileSelection(with: statuses)
+                    return self.reconcileSelection(with: self.visibleFileStatuses)
                 }
 
                 guard !Task.isCancelled else { return }
@@ -729,6 +912,7 @@ public final class RepoStore {
     }
 
     private func mutate(paths: [String], _ body: (GitRepository) async throws -> Void) async {
+        guard selectedCommit == nil else { return }
         guard !isMutating, let worktree = selectedWorktree else { return }
         isMutating = true
         defer { isMutating = false }
@@ -763,14 +947,14 @@ public final class RepoStore {
         pruneFileSelection(with: statuses)
         if let selected = selectedFile,
            let current = statuses.first(where: { $0.path == selected.path }),
-           Self.sideStillExists(current, staged: selectedFileIsStaged) {
+           sideStillExists(current, staged: selectedFileIsStaged) {
             selectedFile = current
             return (current, selectedFileIsStaged)
         }
         if let next = remainingSelectedFile(in: statuses) {
             selectedFile = next.file
             selectedFileIsStaged = next.staged
-            selectionAnchorID = Self.fileSelectionID(path: next.file.path, staged: next.staged)
+            selectionAnchorID = currentFileSelectionID(path: next.file.path, staged: next.staged)
             setLoadedDiff(nil)
             return next
         }
@@ -786,14 +970,14 @@ public final class RepoStore {
         pruneFileSelection(with: statuses)
         if let selected = selectedFile,
            let current = statuses.first(where: { $0.path == selected.path }),
-           Self.sideStillExists(current, staged: selectedFileIsStaged) {
+           sideStillExists(current, staged: selectedFileIsStaged) {
             selectedFile = current
             return
         }
         if let next = remainingSelectedFile(in: statuses) {
             selectedFile = next.file
             selectedFileIsStaged = next.staged
-            selectionAnchorID = Self.fileSelectionID(path: next.file.path, staged: next.staged)
+            selectionAnchorID = currentFileSelectionID(path: next.file.path, staged: next.staged)
             return
         }
         selectedFile = nil
@@ -805,11 +989,10 @@ public final class RepoStore {
 
     private func remainingSelectedFile(in statuses: [FileStatus]) -> (file: FileStatus, staged: Bool)? {
         for id in selectedFileIDs.sorted() {
-            let staged = id.hasPrefix("s:")
-            let path = String(id.dropFirst(2))
-            if let current = statuses.first(where: { $0.path == path }),
-               Self.sideStillExists(current, staged: staged) {
-                return (current, staged)
+            guard let parts = Self.parseFileSelectionID(id) else { continue }
+            if let current = statuses.first(where: { $0.path == parts.path }),
+               sideStillExists(current, staged: parts.staged) {
+                return (current, parts.staged)
             }
         }
         return nil
@@ -817,10 +1000,9 @@ public final class RepoStore {
 
     private func pruneFileSelection(with statuses: [FileStatus]) {
         selectedFileIDs = selectedFileIDs.filter { id in
-            let staged = id.hasPrefix("s:")
-            let path = String(id.dropFirst(2))
-            guard let status = statuses.first(where: { $0.path == path }) else { return false }
-            return Self.sideStillExists(status, staged: staged)
+            guard let parts = Self.parseFileSelectionID(id) else { return false }
+            guard let status = statuses.first(where: { $0.path == parts.path }) else { return false }
+            return sideStillExists(status, staged: parts.staged)
         }
         if let anchor = selectionAnchorID, !selectedFileIDs.contains(anchor) {
             selectionAnchorID = selectedFileIDs.sorted().first
@@ -828,10 +1010,17 @@ public final class RepoStore {
     }
 
     private func rebuildContinuousPlan(preservesScroll: Bool = false) {
-        continuousPlan = ContinuousDiffPlan.build(
-            statuses: fileStatuses,
-            stagedStats: stagedLineStats,
-            unstagedStats: unstagedLineStats)
+        if let commit = selectedCommit {
+            continuousPlan = ContinuousDiffPlan.buildCommit(
+                statuses: visibleFileStatuses,
+                sha: commit.sha,
+                stats: stagedLineStats)
+        } else {
+            continuousPlan = ContinuousDiffPlan.build(
+                statuses: visibleFileStatuses,
+                stagedStats: stagedLineStats,
+                unstagedStats: unstagedLineStats)
+        }
         let ids = Set(continuousPlan.map(\.id))
         continuousLoaded = continuousLoaded.filter { ids.contains($0.key) }
         for (id, task) in continuousExpandTasks where !ids.contains(id) {
@@ -902,13 +1091,22 @@ public final class RepoStore {
         let repository = GitRepository(root: worktree.path)
         let engine = self.engine
         let worktreePath = worktree.path
+        let side: DiffSide
+        let parent: String?
+        if let sha = entry.commitSHA {
+            side = .commit(sha: sha)
+            parent = commitParentSHA
+        } else {
+            side = .workingTree(staged: entry.staged)
+            parent = nil
+        }
         continuousExpandTasks[entry.id] = Task { [weak self] in
             do {
                 let diff = ignoringCollapse
                     ? try await engine.loadIgnoringCollapse(
-                        status: entry.status, staged: entry.staged, from: repository)
+                        status: entry.status, side: side, from: repository, parent: parent)
                     : try await engine.load(
-                        status: entry.status, staged: entry.staged, from: repository)
+                        status: entry.status, side: side, from: repository, parent: parent)
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard let self,
@@ -941,9 +1139,52 @@ public final class RepoStore {
         return (entry, hunk)
     }
 
-    private static func sideStillExists(_ status: FileStatus, staged: Bool) -> Bool {
+    private func sideStillExists(_ status: FileStatus, staged: Bool) -> Bool {
+        if selectedCommit != nil { return true }
         if staged { return status.hasStagedChanges }
         return status.hasUnstagedChanges || status.isUntracked
+    }
+
+    private func clearCommitReadingState() {
+        selectedCommit = nil
+        commitParentSHA = nil
+    }
+
+    private func resetUnpushedList() {
+        unpushedCommits = []
+        hasUpstream = false
+        clearCommitReadingState()
+    }
+
+    /// 当前 SHA 已不在未推送列表里：清掉 commit 选择，随后走工作区刷新。
+    private func abandonSelectedCommit() {
+        selectedCommit = nil
+        commitParentSHA = nil
+        selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
+        setLoadedDiff(nil)
+        cancelContinuousExpands()
+        continuousPlan = []
+        continuousLoaded = [:]
+        continuousRevealID = nil
+        continuousPreservesScroll = false
+        resetExplainConversation(keepingPanel: true)
+    }
+
+    private func applyVisibleFileFilter() {
+        pruneFileSelection(with: visibleFileStatuses)
+        if let selected = selectedFile,
+           !visibleFileStatuses.contains(where: { $0.path == selected.path }) {
+            selectedFile = nil
+            selectedFileIDs = []
+            selectionAnchorID = nil
+            setLoadedDiff(nil)
+            continuousRevealID = nil
+        }
+        if usesContinuousDiff {
+            rebuildContinuousPlan(preservesScroll: false)
+        }
     }
 
     private func startWatching(_ worktree: Worktree) {
@@ -969,7 +1210,9 @@ public final class RepoStore {
             sidebarWidth: sidebarWidth,
             fileListWidth: fileListWidth,
             usesContinuousDiff: usesContinuousDiff,
-            showsBlame: showsBlame)
+            showsBlame: showsBlame,
+            hidesFilteredFiles: hidesFilteredFiles,
+            fileFilterPatterns: fileFilterPatterns)
         try? stateStore.save(state)
     }
 
@@ -984,7 +1227,9 @@ public final class RepoStore {
 
     private func textualFileDiff() -> String {
         if usesContinuousDiff {
-            let id = selectedFile.map { "\(selectedFileIsStaged ? "s" : "u"):\($0.path)" }
+            let id = selectedFile.map {
+                currentFileSelectionID(path: $0.path, staged: selectedFileIsStaged)
+            }
             if let id, case .ready(let diff) = continuousLoaded[id] {
                 return diff.hunks.map(\.patchText).joined()
             }
@@ -1111,6 +1356,7 @@ public final class RepoStore {
         fileStatuses = []
         stagedLineStats = [:]
         unstagedLineStats = [:]
+        workingTreeFileCount = 0
         selectedFile = nil
         selectedFileIDs = []
         selectionAnchorID = nil
@@ -1120,6 +1366,7 @@ public final class RepoStore {
         continuousRevealID = nil
         setLoadedDiff(nil)
         watcher = nil
+        resetUnpushedList()
         resetExplainConversation(keepingPanel: false)
         persist()
     }

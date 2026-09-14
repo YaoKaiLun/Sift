@@ -1,4 +1,5 @@
 import Foundation
+import DiffEngine
 
 public enum AppearancePreference: String, Codable, CaseIterable, Sendable {
     case system
@@ -21,6 +22,8 @@ public struct PersistedState: Codable, Sendable, Equatable {
     public var fileListWidth: Double
     public var usesContinuousDiff: Bool
     public var showsBlame: Bool
+    public var hidesFilteredFiles: Bool
+    public var fileFilterPatterns: [String]
 
     public init(repositoryBookmarks: [Data] = [],
                 selectedWorktreePath: String? = nil,
@@ -32,7 +35,9 @@ public struct PersistedState: Codable, Sendable, Equatable {
                 sidebarWidth: Double = 220,
                 fileListWidth: Double = 300,
                 usesContinuousDiff: Bool = false,
-                showsBlame: Bool = false) {
+                showsBlame: Bool = false,
+                hidesFilteredFiles: Bool = false,
+                fileFilterPatterns: [String] = FileFilter.defaultPatterns) {
         self.repositoryBookmarks = repositoryBookmarks
         self.selectedWorktreePath = selectedWorktreePath
         self.usesTreeView = usesTreeView
@@ -44,7 +49,11 @@ public struct PersistedState: Codable, Sendable, Equatable {
         self.fileListWidth = fileListWidth
         self.usesContinuousDiff = usesContinuousDiff
         self.showsBlame = showsBlame
+        self.hidesFilteredFiles = hidesFilteredFiles
+        self.fileFilterPatterns = fileFilterPatterns
     }
+
+    public static let defaultFileFilterPatterns: [String] = FileFilter.defaultPatterns
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -59,6 +68,9 @@ public struct PersistedState: Codable, Sendable, Equatable {
         fileListWidth = try container.decodeIfPresent(Double.self, forKey: .fileListWidth) ?? 300
         usesContinuousDiff = try container.decodeIfPresent(Bool.self, forKey: .usesContinuousDiff) ?? false
         showsBlame = try container.decodeIfPresent(Bool.self, forKey: .showsBlame) ?? false
+        hidesFilteredFiles = try container.decodeIfPresent(Bool.self, forKey: .hidesFilteredFiles) ?? false
+        fileFilterPatterns = try container.decodeIfPresent([String].self, forKey: .fileFilterPatterns)
+            ?? FileFilter.defaultPatterns
     }
 }
 

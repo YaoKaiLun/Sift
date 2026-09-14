@@ -95,6 +95,19 @@ final class PersistedStateTests: XCTestCase {
         XCTAssertFalse(state.showsBlame)
     }
 
+    /// 旧版 state.json 没有过滤字段时，必须落到不隐藏 + 缺省规则。
+    func testMissingFilterFieldsUseDefaults() throws {
+        let url = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"repositoryBookmarks":[],"usesTreeView":true}"#.utf8).write(to: url)
+
+        let state = PersistedStateStore(fileURL: url).load()
+        XCTAssertFalse(state.hidesFilteredFiles)
+        XCTAssertEqual(state.fileFilterPatterns, PersistedState.defaultFileFilterPatterns)
+    }
+
     /// 旧版 state.json 没有解释设置时，Base URL 与模型名必须落到空字符串。
     func testMissingExplainFieldsDefaultToEmptyString() throws {
         let url = temporaryFile()

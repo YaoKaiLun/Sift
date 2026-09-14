@@ -79,4 +79,21 @@ final class DiffCacheTests: XCTestCase {
         XCTAssertNil(stagedA)
         XCTAssertNotNil(unstagedB)
     }
+
+    func testWorkingTreeAndCommitSidesDoNotCollide() async {
+        let cache = DiffCache()
+        let wt = URL(fileURLWithPath: "/w")
+        let working = DiffCacheKey(worktreePath: wt, filePath: "a.txt", side: .workingTree(staged: false))
+        let commit = DiffCacheKey(worktreePath: wt, filePath: "a.txt", side: .commit(sha: "abc"))
+        await cache.insert(diff("working"), for: working)
+        await cache.insert(diff("commit"), for: commit)
+        let workingValue = await cache.value(for: working)
+        let commitValue = await cache.value(for: commit)
+        guard case .ready(let workingDiff) = workingValue,
+              case .ready(let commitDiff) = commitValue else {
+            return XCTFail("两侧都应命中各自缓存")
+        }
+        XCTAssertEqual(workingDiff.path, "working")
+        XCTAssertEqual(commitDiff.path, "commit")
+    }
 }

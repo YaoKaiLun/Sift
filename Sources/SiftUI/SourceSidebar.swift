@@ -9,9 +9,11 @@ public extension Notification.Name {
 
 struct SourceSidebar: View {
     @Environment(RepoStore.self) private var store
+    @Environment(UpdateController.self) private var updates
     @Environment(\.trafficLightInset) private var trafficLightInset
     @State private var collapsedRoots: Set<URL> = []
     @State private var hoveredRow: String?
+    @State private var expandedCommitWorktrees: Set<URL> = []
 
     var body: some View {
         @Bindable var store = store
@@ -30,6 +32,12 @@ struct SourceSidebar: View {
                         if !collapsedRoots.contains(repository.root) {
                             ForEach(repository.worktrees) { worktree in
                                 worktreeRow(worktree)
+                                if store.selectedWorktree?.path == worktree.path,
+                                   expandedCommitWorktrees.contains(worktree.path) {
+                                    ForEach(store.unpushedCommits) { commit in
+                                        commitRow(commit)
+                                    }
+                                }
                             }
                         }
                     }
@@ -56,6 +64,7 @@ struct SourceSidebar: View {
                         Label("深色", systemImage: "moon")
                     }
                 }
+                updateFooterButton
                 PlainIconButton(systemName: "gearshape",
                                 isSelected: store.showsExplainSettings,
                                 help: "模型配置") {
@@ -116,8 +125,31 @@ struct SourceSidebar: View {
 
     private func worktreeRow(_ worktree: Worktree) -> some View {
         let id = "wt:\(worktree.path.path)"
-        let selected = store.selectedWorktree?.path == worktree.path
+        let isCurrent = store.selectedWorktree?.path == worktree.path
+        let selected = isCurrent && store.selectedCommit == nil
+        let showsUnpushed = isCurrent && !store.unpushedCommits.isEmpty
+        let expanded = expandedCommitWorktrees.contains(worktree.path)
         return HStack(spacing: Theme.rowSpacing) {
+            if showsUnpushed {
+                Button {
+                    if expanded {
+                        expandedCommitWorktrees.remove(worktree.path)
+                    } else {
+                        expandedCommitWorktrees.insert(worktree.path)
+                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .frame(width: Theme.disclosureColumnWidth, height: Theme.sidebarRowHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            } else {
+                Color.clear.frame(width: Theme.disclosureColumnWidth)
+            }
             Image(systemName: "arrow.triangle.branch")
                 .font(.system(size: 11))
                 .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
@@ -134,6 +166,11 @@ struct SourceSidebar: View {
                     .truncationMode(.head)
             }
             Spacer(minLength: 8)
+            if showsUnpushed {
+                Text("↑\(store.unpushedCommits.count)")
+                    .font(Theme.secondaryFont.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
             if let count = changeCount(for: worktree), count > 0 {
                 Text("\(count)")
                     .font(Theme.secondaryFont.monospacedDigit())
@@ -150,6 +187,49 @@ struct SourceSidebar: View {
         }
     }
 
+    private func commitRow(_ commit: CommitInfo) -> some View {
+        let id = "commit:\(commit.sha)"
+        let selected = store.selectedCommit?.sha == commit.sha
+        return HStack(spacing: Theme.rowSpacing) {
+            Text(commit.shortSHA)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text(commit.subject)
+                .font(Theme.interfaceFont)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, Theme.indentWidth * 2 + Theme.disclosureColumnWidth)
+        .rowSurface(isSelected: selected, isHovered: hoveredRow == id,
+                    height: Theme.sidebarRowHeight)
+        .pointerCursor()
+        .onHover { hoveredRow = $0 ? id : nil }
+        .onTapGesture {
+            Task { await store.select(commit: commit) }
+        }
+    }
+
+    @ViewBuilder
+    private var updateFooterButton: some View {
+        switch updates.state {
+        case .available(let update):
+            Button("更新") { updates.download() }
+                .buttonStyle(UpdateCapsuleButtonStyle())
+                .help("下载 \(update.version.description)")
+        case .downloading:
+            Button("下载中…") {}
+                .buttonStyle(UpdateCapsuleButtonStyle())
+                .disabled(true)
+        case .ready:
+            Button("重启") { updates.restart() }
+                .buttonStyle(UpdateCapsuleButtonStyle())
+                .help("重启并安装更新")
+        default:
+            EmptyView()
+        }
+    }
+
     private func toggleExpanded(_ root: URL) {
         if collapsedRoots.contains(root) {
             collapsedRoots.remove(root)
@@ -162,7 +242,7 @@ struct SourceSidebar: View {
     /// 给每个都跑一次 status，那是后台预取的活，等有了真实使用数据再做。
     private func changeCount(for worktree: Worktree) -> Int? {
         guard store.selectedWorktree?.path == worktree.path else { return nil }
-        return store.fileStatuses.count
+        return store.workingTreeFileCount
     }
 
     private func presentOpenPanel() {

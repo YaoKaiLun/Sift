@@ -7,16 +7,25 @@ public struct ContinuousDiffEntry: Sendable, Equatable, Identifiable {
     public let staged: Bool
     public let added: Int?
     public let deleted: Int?
+    /// 阅读某次提交时为该 SHA；工作区为 nil。
+    public let commitSHA: String?
 
-    public init(status: FileStatus, staged: Bool, added: Int?, deleted: Int?) {
+    public init(status: FileStatus, staged: Bool, added: Int?, deleted: Int?,
+                commitSHA: String? = nil) {
         self.status = status
         self.staged = staged
         self.added = added
         self.deleted = deleted
+        self.commitSHA = commitSHA
     }
 
-    /// 与中栏行 id 对齐：`s:path` / `u:path`。
-    public var id: String { "\(staged ? "s" : "u"):\(status.path)" }
+    /// 与中栏行 id 对齐：`s:path` / `u:path` / `c:<sha>:<path>`。
+    public var id: String {
+        if let commitSHA {
+            return "c:\(commitSHA):\(status.path)"
+        }
+        return "\(staged ? "s" : "u"):\(status.path)"
+    }
 
     /// 占位头文案：`path  +N −M`。缺统计或二进制时省略数字。
     public var headerTitle: String {
@@ -45,6 +54,17 @@ public enum ContinuousDiffPlan {
         return entries
     }
 
+    /// 单次提交的文件列表。id 为 `c:<sha>:<path>`，不分组暂存。
+    public static func buildCommit(
+        statuses: [FileStatus],
+        sha: String,
+        stats: [String: LineStats]
+    ) -> [ContinuousDiffEntry] {
+        statuses.sorted(by: FileStatus.pathOrder).map { status in
+            entry(status: status, staged: false, stats: stats[status.path], commitSHA: sha)
+        }
+    }
+
     /// 与可见字符范围相交、且尚未展开的占位头。视口外的文件不会出现在结果里。
     public static func entriesNeedingLoad(
         _ entries: [ContinuousDiffEntry],
@@ -60,7 +80,8 @@ public enum ContinuousDiffPlan {
         }
     }
 
-    private static func entry(status: FileStatus, staged: Bool, stats: LineStats?) -> ContinuousDiffEntry {
+    private static func entry(status: FileStatus, staged: Bool, stats: LineStats?,
+                              commitSHA: String? = nil) -> ContinuousDiffEntry {
         let numbers: (Int?, Int?)
         if let stats, !stats.isBinary {
             numbers = (stats.added, stats.deleted)
@@ -68,7 +89,8 @@ public enum ContinuousDiffPlan {
             numbers = (nil, nil)
         }
         return ContinuousDiffEntry(
-            status: status, staged: staged, added: numbers.0, deleted: numbers.1)
+            status: status, staged: staged, added: numbers.0, deleted: numbers.1,
+            commitSHA: commitSHA)
     }
 
     private static func rangesIntersect(_ a: NSRange, _ b: NSRange) -> Bool {

@@ -16,33 +16,23 @@ public actor DiffEngine {
     /// 加载单个文件的 diff。命中生成文件规则时返回 `.collapsed` 且不读取内容。
     public func load(status: FileStatus, staged: Bool,
                      from repository: GitRepository) async throws -> LoadedDiff {
-        try await load(status: status, staged: staged,
-                       from: repository, ignoringCollapse: false)
+        try await load(status: status, side: .workingTree(staged: staged), from: repository)
     }
 
-    /// 用户在占位条上点了"仍要查看"时调用，跳过折叠判断。
     public func loadIgnoringCollapse(status: FileStatus, staged: Bool,
                                      from repository: GitRepository) async throws -> LoadedDiff {
-        try await load(status: status, staged: staged,
+        try await load(status: status, side: .workingTree(staged: staged),
                        from: repository, ignoringCollapse: true)
     }
 
-    public func invalidate(worktreePath: URL) async {
-        await cache.removeAll(inWorktree: worktreePath)
-    }
-
-    public func invalidate(worktreePath: URL, filePath: String) async {
-        await cache.remove(inWorktree: worktreePath, filePath: filePath)
-    }
-
-    private func load(status: FileStatus, staged: Bool,
-                      from repository: GitRepository,
-                      ignoringCollapse: Bool) async throws -> LoadedDiff {
+    public func load(status: FileStatus, side: DiffSide,
+                     from repository: GitRepository,
+                     parent: String? = nil,
+                     ignoringCollapse: Bool = false) async throws -> LoadedDiff {
         let key = DiffCacheKey(worktreePath: repository.root,
-                               filePath: status.path, staged: staged)
+                               filePath: status.path, side: side)
 
         if let cached = await cache.value(for: key) {
-            // 折叠占位不算命中——用户明确要求强制加载时得真的去读。
             if !(ignoringCollapse && isCollapsed(cached)) {
                 return cached
             }
@@ -57,8 +47,8 @@ public actor DiffEngine {
 
         let diff: FileDiff
         if ImagePath.matches(status.path) {
-            diff = await imageDiff(status: status, staged: staged, from: repository)
-        } else if status.isUntracked {
+            diff = await imageDiff(status: status, side: side, parent: parent, from: repository)
+        } else if case .workingTree = side, status.isUntracked {
             if !ignoringCollapse,
                let size = fileSize(path: status.path, in: repository),
                let reason = detector.reason(forPath: status.path,
@@ -75,11 +65,14 @@ public actor DiffEngine {
                                                ignoringCollapse: ignoringCollapse)
             }
         } else {
-            diff = try await repository.diff(path: status.path, staged: staged)
+            switch side {
+            case .workingTree(let staged):
+                diff = try await repository.diff(path: status.path, staged: staged)
+            case .commit(let sha):
+                diff = try await repository.diff(path: status.path, from: parent, to: sha)
+            }
         }
 
-        // 内容读出来之后才知道真实体量，这里再判一次行数与字节数。
-        // 图片没有 hunk，estimatedByteCount 为 0，不会被 500KB 文本规则误伤。
         if !ignoringCollapse {
             let lineCount = diff.hunks.reduce(0) { $0 + $1.lines.count }
             if let reason = detector.reason(forPath: status.path,
@@ -96,9 +89,24 @@ public actor DiffEngine {
         return result
     }
 
-    private func imageDiff(status: FileStatus, staged: Bool,
+    public func loadIgnoringCollapse(status: FileStatus, side: DiffSide,
+                                     from repository: GitRepository,
+                                     parent: String? = nil) async throws -> LoadedDiff {
+        try await load(status: status, side: side, from: repository,
+                       parent: parent, ignoringCollapse: true)
+    }
+
+    public func invalidate(worktreePath: URL) async {
+        await cache.removeAll(inWorktree: worktreePath)
+    }
+
+    public func invalidate(worktreePath: URL, filePath: String) async {
+        await cache.remove(inWorktree: worktreePath, filePath: filePath)
+    }
+
+    private func imageDiff(status: FileStatus, side: DiffSide, parent: String?,
                            from repository: GitRepository) async -> FileDiff {
-        let refs = blobRefs(status: status, staged: staged)
+        let refs = blobRefs(status: status, side: side, parent: parent)
         let old = await imageSide(refs.old, from: repository)
         let new = await imageSide(refs.new, from: repository)
         let content: DiffContent = (old == nil && new == nil)
@@ -117,11 +125,18 @@ public actor DiffEngine {
         }
     }
 
-    /// 按当前选中的 staged 侧决定旧/新 blob。
-    private func blobRefs(status: FileStatus, staged: Bool)
+    private func blobRefs(status: FileStatus, side: DiffSide, parent: String?)
         -> (old: (BlobSource, String)?, new: (BlobSource, String)?) {
         let path = status.path
         let original = status.originalPath ?? path
+        if case .commit(let sha) = side {
+            let old: (BlobSource, String)? = parent.map { (.revision($0), original) }
+            let new: (BlobSource, String)? = status.indexStatus == .deleted
+                ? nil : (.revision(sha), path)
+            return (old, new)
+        }
+        let staged: Bool
+        if case .workingTree(let value) = side { staged = value } else { staged = false }
         if status.isUntracked {
             return (nil, (.worktree, path))
         }

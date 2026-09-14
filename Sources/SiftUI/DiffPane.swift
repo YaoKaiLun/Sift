@@ -218,12 +218,15 @@ struct DiffPane: View {
 
     private var headerChangeKind: FileChangeKind? {
         if store.usesContinuousDiff, let id = visibleContinuousFileID {
-            let staged = id.hasPrefix("s:")
             let path = Self.path(fromFileID: id)
             guard let file = store.fileStatuses.first(where: { $0.path == path }) else { return nil }
-            return staged ? file.indexStatus : file.worktreeStatus
+            if id.hasPrefix("c:") || store.selectedCommit != nil {
+                return file.indexStatus
+            }
+            return id.hasPrefix("s:") ? file.indexStatus : file.worktreeStatus
         }
         guard let file = store.selectedFile else { return nil }
+        if store.selectedCommit != nil { return file.indexStatus }
         return store.selectedFileIsStaged ? file.indexStatus : file.worktreeStatus
     }
 
@@ -242,6 +245,12 @@ struct DiffPane: View {
     }
 
     private static func path(fromFileID id: String) -> String {
+        if id.hasPrefix("c:") {
+            let rest = id.dropFirst(2)
+            if let colon = rest.firstIndex(of: ":") {
+                return String(rest[rest.index(after: colon)...])
+            }
+        }
         if id.hasPrefix("s:") || id.hasPrefix("u:") {
             return String(id.dropFirst(2))
         }
@@ -249,6 +258,7 @@ struct DiffPane: View {
     }
 
     private var hunkActions: HunkActions? {
+        if store.selectedCommit != nil { return nil }
         if store.usesContinuousDiff {
             return HunkActions(
                 showsStage: true,
@@ -460,8 +470,15 @@ struct DiffPane: View {
             blameLines = []
             return
         }
+        if store.selectedCommit != nil, store.commitParentSHA == nil {
+            blameLines = []
+            return
+        }
         blameLines = []
-        let lines = await repo.blame(path: file.path, staged: store.selectedFileIsStaged)
+        let lines = await repo.blame(
+            path: file.path,
+            staged: store.selectedFileIsStaged,
+            revision: store.selectedCommit == nil ? nil : store.commitParentSHA)
         guard !Task.isCancelled else { return }
         blameLines = lines
     }

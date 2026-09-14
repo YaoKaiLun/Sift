@@ -1407,7 +1407,8 @@ private struct BlamePopoverView: View {
 }
 
 /// 复制时丢掉 gutter 行号，保留 +/- 与正文。
-private final class DiffCopyTextView: NSTextView {
+/// 只读 diff 文本。方向键交给文件列表切行，不移动插入点。
+final class DiffCopyTextView: NSTextView {
     weak var hunkCursorSource: DiffTextView.Coordinator?
 
     override var writablePasteboardTypes: [NSPasteboard.PasteboardType] {

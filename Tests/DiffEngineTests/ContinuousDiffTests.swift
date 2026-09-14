@@ -58,6 +58,15 @@ final class ContinuousDiffTests: XCTestCase {
         ])
     }
 
+    func testBuildCommitUsesSHAPrefixedIDs() {
+        let status = FileStatus(path: "b.txt", originalPath: nil,
+                                 indexStatus: .added, worktreeStatus: .unmodified)
+        let plan = ContinuousDiffPlan.buildCommit(
+            statuses: [status], sha: "abc123", stats: [:])
+        XCTAssertEqual(plan.map(\.id), ["c:abc123:b.txt"])
+        XCTAssertEqual(plan.first?.commitSHA, "abc123")
+    }
+
     func testWorkingTreeGroupSortsByPathNotChangeKind() {
         let statuses = [
             untracked("Sources/New.swift"),
