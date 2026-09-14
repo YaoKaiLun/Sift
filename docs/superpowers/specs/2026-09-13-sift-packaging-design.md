@@ -17,7 +17,7 @@
 | DMG + `Install Sift.command`（去隔离属性） | 沙盒化、改最低系统版本 |
 | GitHub Actions：PR/push 跑测试；tag 发 Release | 改产品功能、性能门禁数字 |
 
-最低系统仍是 macOS 26。GitHub runner 用 `macos-26`。
+最低系统是 macOS 15。GitHub runner 仍用 `macos-26`（用新 SDK 编译，部署目标是 15）。
 
 ---
 

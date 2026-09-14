@@ -2,7 +2,7 @@
 
 面向 macOS 的 Git diff 阅读器。把多个仓库、多个 worktree 放在同一侧栏里，文件列表和 hunk 操作都对着鼠标，用来审查 AI 写出来的改动。
 
-系统要求：[macOS 26](https://www.apple.com/macos/) 或更高。
+系统要求：[macOS 15](https://www.apple.com/macos/)（Sequoia）或更高。
 
 ![Sift 主界面：仓库与 worktree、改动文件列表、统一 diff](docs/images/screenshot.png)
 

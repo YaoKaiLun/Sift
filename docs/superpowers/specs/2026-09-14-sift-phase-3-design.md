@@ -42,7 +42,7 @@
 
 ## 2. 全局约束（沿用计划一 / 二）
 
-- 最低 macOS 26。**零第三方依赖**（不引入 Sparkle、Sparkle 的 EdDSA 工具链、tree-sitter）。
+- 最低 macOS 15（Sequoia）。**零第三方依赖**（不引入 Sparkle、Sparkle 的 EdDSA 工具链、tree-sitter）。
 - 主线程永不调用 git。网络请求（检查更新、下载 DMG）同样离开主线程。
 - 永不轮询 git / FSEvents。更新检查只在启动与用户点「检查更新」时发生，不挂定时器。
 - 切换文件 / 仓库 / worktree / 中栏数据源时，在途的**读**任务立即取消。

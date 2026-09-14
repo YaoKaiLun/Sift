@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cursor Cloud Agent 环境安装脚本。
 #
-# 重要背景：Sift 是一个原生 macOS 26 应用（AppKit / SwiftUI / CoreServices/FSEvents /
+# 重要背景：Sift 是一个原生 macOS 应用，最低系统 macOS 15（AppKit / SwiftUI / CoreServices/FSEvents /
 # os.OSAllocatedUnfairLock / Darwin）。它无法在 Linux 上构建或运行——完整的
 # `swift build` / `swift test` / 运行 App 必须在装有 Xcode 26（Swift 6.2）的 macOS 上完成。
 #

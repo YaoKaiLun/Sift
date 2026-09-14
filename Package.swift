@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Sift",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS(.v15)],
     products: [
         .library(name: "GitKit", targets: ["GitKit"]),
         .library(name: "DiffEngine", targets: ["DiffEngine"]),
