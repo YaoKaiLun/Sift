@@ -43,17 +43,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SiftApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = RepoStore()
+    @State private var updates = UpdateController()
 
     var body: some Scene {
         @Bindable var store = store
         WindowGroup {
             ContentView()
                 .environment(store)
+                .environment(updates)
                 .preferredColorScheme(store.appearance.colorScheme)
                 .task { await store.restore() }
+                .task { await updates.check(automatic: true) }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("检查更新…") {
+                    Task { await updates.check(automatic: false) }
+                }
+                if case .downloading = updates.state {
+                    Button("取消下载") {
+                        updates.cancelDownload()
+                    }
+                }
+            }
             CommandGroup(after: .newItem) {
                 Button("添加仓库…") {
                     NotificationCenter.default.post(name: .siftAddRepository, object: nil)

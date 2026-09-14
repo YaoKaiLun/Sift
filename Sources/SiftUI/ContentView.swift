@@ -4,6 +4,7 @@ import RepoStore
 
 public struct ContentView: View {
     @Environment(RepoStore.self) private var store
+    @Environment(UpdateController.self) private var updates
     @State private var showsSidebar = true
     @State private var isFullScreen = false
 
@@ -17,15 +18,30 @@ public struct ContentView: View {
             if showsSidebar {
                 SourceSidebar()
                     .frame(width: store.sidebarWidth)
-                SplitDivider(width: sidebarWidthBinding, range: 180...340,
-                             onDragEnded: { store.persist() })
+                    .clipped()
             }
             FileListPane(showsSidebar: $showsSidebar)
                 .frame(width: store.fileListWidth)
-            SplitDivider(width: fileListWidthBinding, range: 240...520,
-                         onDragEnded: { store.persist() })
+                .clipped()
             DiffPane()
                 .frame(maxWidth: .infinity)
+                .clipped()
+        }
+        .overlay(alignment: .leading) {
+            let hits = SplitOverlayLayout.hitMinXs(
+                showsSidebar: showsSidebar,
+                sidebarWidth: store.sidebarWidth,
+                fileListWidth: store.fileListWidth)
+            ZStack(alignment: .leading) {
+                if let x = hits.sidebar {
+                    SplitDivider(width: sidebarWidthBinding, range: 180...340,
+                                 onDragEnded: { store.persist() })
+                        .offset(x: x)
+                }
+                SplitDivider(width: fileListWidthBinding, range: 240...520,
+                             onDragEnded: { store.persist() })
+                    .offset(x: hits.fileList)
+            }
         }
         .frame(minWidth: 860, maxWidth: .infinity,
                minHeight: 480, maxHeight: .infinity)
@@ -52,10 +68,27 @@ public struct ContentView: View {
             }
         }
         .preferredColorScheme(store.appearance.colorScheme)
+        .overlay(alignment: .bottom) {
+            if case .ready(let version, _) = updates.state {
+                UpdateBanner(version: version) {
+                    updates.restart()
+                }
+                .padding(.bottom, 16)
+            }
+        }
         .alert("出错了",
                isPresented: .constant(store.errorMessage != nil),
                presenting: store.errorMessage) { _ in
             Button("好") { store.errorMessage = nil }
+        } message: { message in
+            Text(message)
+        }
+        .alert("检查更新",
+               isPresented: Binding(
+                get: { updates.userMessage != nil },
+                set: { if !$0 { updates.userMessage = nil } }),
+               presenting: updates.userMessage) { _ in
+            Button("好") { updates.userMessage = nil }
         } message: { message in
             Text(message)
         }
