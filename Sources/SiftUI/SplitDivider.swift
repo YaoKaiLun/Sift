@@ -1,13 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// 分栏线。平时只有 1pt，指上去或拖动时才变粗变亮。
+/// 分栏线。布局占 11pt 热区，视觉仍是居中的 1pt；指上去或拖动时才变粗变亮。
 ///
-/// 变粗画在 overlay 里，不占布局宽度，所以两边的内容不会跟着抖。
+/// 变粗画在 overlay 里。热区必须自己参与命中，不能挂在 1pt 父框上——
+/// 否则会被左右 pane 的布局框抢走。
 struct SplitDivider: View {
     @Binding var width: CGFloat
     let range: ClosedRange<CGFloat>
     var onDragEnded: (() -> Void)? = nil
+    var hitWidth: CGFloat = 11
 
     @State private var isHovering = false
     @State private var isDragging = false
@@ -17,27 +19,26 @@ struct SplitDivider: View {
     private var isActive: Bool { isHovering || isDragging }
 
     var body: some View {
-        Rectangle()
-            .fill(Theme.dividerColor)
-            .frame(width: 1)
+        Color.clear
+            .frame(width: hitWidth)
             .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .overlay {
+                Rectangle()
+                    .fill(Theme.dividerColor)
+                    .frame(width: 1)
+            }
             .overlay {
                 Rectangle()
                     .fill(Theme.dividerActiveColor)
                     .frame(width: 3)
                     .opacity(isActive ? 1 : 0)
             }
-            .overlay {
-                // 1pt 太细，鼠标抓不住。热区比线宽得多，但不参与布局。
-                Color.clear
-                    .frame(width: 11)
-                    .contentShape(Rectangle())
-                    .onHover { hovering in
-                        isHovering = hovering
-                        syncCursor()
-                    }
-                    .gesture(dragGesture)
+            .onHover { hovering in
+                isHovering = hovering
+                syncCursor()
             }
+            .gesture(dragGesture)
             .animation(.easeOut(duration: 0.12), value: isActive)
             .onDisappear(perform: popCursor)
     }
