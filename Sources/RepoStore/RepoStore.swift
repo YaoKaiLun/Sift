@@ -266,16 +266,19 @@ public final class RepoStore {
 
     public func setRepositoryPinned(root: URL, pinned: Bool) {
         applyListOrder(RepositoryListOrder.setPinned(
-            pinned, id: root.path, in: listItems()))
+            pinned, id: RepositoryListOrder.canonicalPath(for: root), in: listItems()))
     }
 
     public func moveRepository(id: String, relativeTo targetID: String, after: Bool) {
         applyListOrder(RepositoryListOrder.move(
-            id: id, relativeTo: targetID, after: after, in: listItems()))
+            id: RepositoryListOrder.canonicalPath(for: URL(fileURLWithPath: id)),
+            relativeTo: RepositoryListOrder.canonicalPath(for: URL(fileURLWithPath: targetID)),
+            after: after, in: listItems()))
     }
 
     public func removeRepository(root: URL) {
-        repositories.removeAll { $0.root == root }
+        let id = RepositoryListOrder.canonicalPath(for: root)
+        repositories.removeAll { RepositoryListOrder.canonicalPath(for: $0.root) == id }
         if let selected = selectedWorktree,
            !repositories.contains(where: { $0.worktrees.contains { $0.path == selected.path } }) {
             selectedWorktree = nil
@@ -960,11 +963,15 @@ public final class RepoStore {
     }
 
     private func listItems() -> [RepositoryListItem] {
-        repositories.map { RepositoryListItem(id: $0.root.path, isPinned: $0.isPinned) }
+        repositories.map {
+            RepositoryListItem(id: RepositoryListOrder.canonicalPath(for: $0.root), isPinned: $0.isPinned)
+        }
     }
 
     private func applyListOrder(_ items: [RepositoryListItem]) {
-        let byPath = Dictionary(uniqueKeysWithValues: repositories.map { ($0.root.path, $0) })
+        let byPath = Dictionary(uniqueKeysWithValues: repositories.map {
+            (RepositoryListOrder.canonicalPath(for: $0.root), $0)
+        })
         repositories = items.compactMap { item in
             guard var entry = byPath[item.id] else { return nil }
             entry.isPinned = item.isPinned
@@ -974,9 +981,10 @@ public final class RepoStore {
     }
 
     private func applyPersistedPins(_ paths: [String]) {
-        let pinned = Set(paths)
+        let pinned = Set(paths.map { RepositoryListOrder.canonicalPath(for: URL(fileURLWithPath: $0)) })
         let items = repositories.map {
-            RepositoryListItem(id: $0.root.path, isPinned: pinned.contains($0.root.path))
+            let id = RepositoryListOrder.canonicalPath(for: $0.root)
+            return RepositoryListItem(id: id, isPinned: pinned.contains(id))
         }
         applyListOrder(RepositoryListOrder.normalize(items))
     }
@@ -1284,7 +1292,9 @@ public final class RepoStore {
         }
         let state = PersistedState(
             repositoryBookmarks: bookmarks,
-            pinnedRepositoryPaths: repositories.filter(\.isPinned).map { $0.root.path },
+            pinnedRepositoryPaths: repositories.filter(\.isPinned).map {
+                RepositoryListOrder.canonicalPath(for: $0.root)
+            },
             selectedWorktreePath: selectedWorktree?.path.path,
             usesTreeView: usesTreeView,
             usesSplitDiff: usesSplitDiff,

@@ -10,6 +10,19 @@ final class RepositoryListOrderTests: XCTestCase {
         items.map(\.id)
     }
 
+    func testCanonicalPathTreatsSymlinkAsSameDirectory() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("sift-canon-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let real = dir.appendingPathComponent("real")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        let link = dir.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: real.path)
+        XCTAssertEqual(RepositoryListOrder.canonicalPath(for: link),
+                       RepositoryListOrder.canonicalPath(for: real))
+    }
+
     func testInsertNewGoesAfterPinnedThenBeforeOtherUnpinned() {
         let existing = [
             item("pin-a", pinned: true),

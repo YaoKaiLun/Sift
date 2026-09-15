@@ -12,6 +12,11 @@ public struct RepositoryListItem: Equatable, Sendable {
 
 /// 侧栏仓库顺序：置顶组在前，未置顶组在后。纯函数，方便单测。
 public enum RepositoryListOrder {
+    /// `/var` 与 `/private/var` 这类符号链接必须当成同一仓库。
+    public static func canonicalPath(for url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
     /// 新仓库插在全部置顶之后、其余未置顶之前。
     public static func insertNew(id: String, into items: [RepositoryListItem]) -> [RepositoryListItem] {
         var result = items

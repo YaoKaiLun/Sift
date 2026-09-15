@@ -392,6 +392,14 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertFalse(store.showsBlame)
     }
 
+    private func repoIDs(_ urls: [URL]) -> [String] {
+        urls.map(RepositoryListOrder.canonicalPath(for:))
+    }
+
+    private func storeRepoIDs(_ store: RepoStore) -> [String] {
+        store.repositories.map { RepositoryListOrder.canonicalPath(for: $0.root) }
+    }
+
     func testAddRepositoryInsertsAfterPinned() async throws {
         let first = try makeRepository()
         let second = try makeRepository()
@@ -405,15 +413,15 @@ final class RepoStoreTests: XCTestCase {
         let store = makeStore()
         await store.addRepository(at: first)
         await store.addRepository(at: second)
-        XCTAssertEqual(store.repositories.map(\.root), [second, first],
+        XCTAssertEqual(storeRepoIDs(store), repoIDs([second, first]),
                        "新仓库应插在未置顶组开头")
 
         store.setRepositoryPinned(root: first, pinned: true)
-        XCTAssertEqual(store.repositories.map(\.root), [first, second])
+        XCTAssertEqual(storeRepoIDs(store), repoIDs([first, second]))
         XCTAssertEqual(store.repositories.map(\.isPinned), [true, false])
 
         await store.addRepository(at: third)
-        XCTAssertEqual(store.repositories.map(\.root), [first, third, second],
+        XCTAssertEqual(storeRepoIDs(store), repoIDs([first, third, second]),
                        "新仓库必须在置顶之后、其余未置顶之前")
         XCTAssertEqual(store.repositories.map(\.isPinned), [true, false, false])
     }
@@ -433,13 +441,13 @@ final class RepoStoreTests: XCTestCase {
         await store.addRepository(at: first)
         await store.addRepository(at: second)
         store.setRepositoryPinned(root: first, pinned: true)
-        XCTAssertEqual(store.repositories.map(\.root), [first, second])
+        XCTAssertEqual(storeRepoIDs(store), repoIDs([first, second]))
 
         let restored = RepoStore(
             stateStore: PersistedStateStore(fileURL: stateURL),
             keychain: MemoryKeychain())
         await restored.restore()
-        XCTAssertEqual(restored.repositories.map(\.root), [first, second],
+        XCTAssertEqual(storeRepoIDs(restored), repoIDs([first, second]),
                        "恢复必须按书签顺序 append，不能把新增插入逻辑套在书签上")
         XCTAssertEqual(restored.repositories.map(\.isPinned), [true, false])
     }
@@ -456,7 +464,7 @@ final class RepoStoreTests: XCTestCase {
         await store.addRepository(at: second)
         store.setRepositoryPinned(root: first, pinned: true)
         await store.refreshFileList()
-        XCTAssertEqual(store.repositories.map(\.root), [first, second])
+        XCTAssertEqual(storeRepoIDs(store), repoIDs([first, second]))
         XCTAssertTrue(store.repositories[0].isPinned)
         XCTAssertFalse(store.repositories[1].isPinned)
     }
@@ -473,7 +481,7 @@ final class RepoStoreTests: XCTestCase {
         await store.addRepository(at: second)
         store.setRepositoryPinned(root: first, pinned: true)
         store.moveRepository(id: second.path, relativeTo: first.path, after: true)
-        XCTAssertEqual(store.repositories.map(\.root), [first, second])
+        XCTAssertEqual(storeRepoIDs(store), repoIDs([first, second]))
         XCTAssertTrue(store.repositories.allSatisfy(\.isPinned))
     }
 
