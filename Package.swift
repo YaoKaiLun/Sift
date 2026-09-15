@@ -29,6 +29,7 @@ let package = Package(
         .testTarget(name: "HighlighterTests", dependencies: ["Highlighter"]),
         .testTarget(name: "AIClientTests", dependencies: ["AIClient"]),
         .testTarget(name: "UpdateKitTests", dependencies: ["UpdateKit"]),
-        .testTarget(name: "PerformanceTests", dependencies: ["GitKit", "DiffEngine", "RepoStore"]),
+        .testTarget(name: "PerformanceTests",
+                    dependencies: ["GitKit", "DiffEngine", "RepoStore", "SiftUI"]),
     ]
 )

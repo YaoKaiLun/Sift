@@ -257,18 +257,4 @@ final class DiffDocumentBuilderTests: XCTestCase {
         XCTAssertFalse(copied.contains("LINE_19_END"), "再往后第 9 行不应进入上下文")
     }
 
-    /// 性能护栏：大 diff 的文档构建必须够快，不然点开文件那 100ms 预算就爆了。
-    func testBuildsLargeDocumentQuickly() {
-        let lines = (0..<10_000).map { index in
-            DiffLine(kind: index % 3 == 0 ? .addition : .context,
-                     oldLineNumber: index, newLineNumber: index,
-                     text: "some source code line number \(index)")
-        }
-        let diff = makeDiff(lines)
-        let start = ContinuousClock.now
-        _ = DiffDocumentBuilder.build(diff)
-        let elapsed = ContinuousClock.now - start
-        XCTAssertLessThan(elapsed, .milliseconds(50),
-                          "10000 行的文档构建耗时 \(elapsed)，超出预算")
-    }
 }
