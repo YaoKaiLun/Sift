@@ -24,6 +24,7 @@ jobs:
         run: |
           python3 Scripts/test_version.py
           python3 Scripts/test_create_icons.py
+          python3 Scripts/test_release_notes.py
 
       - name: Preflight
         run: ./Scripts/preflight.sh
