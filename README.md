@@ -1,5 +1,7 @@
 # Sift
 
+[中文](README.md) · [English](README.en.md)
+
 [![CI](https://github.com/YaoKaiLun/Sift/actions/workflows/ci.yml/badge.svg)](https://github.com/YaoKaiLun/Sift/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/YaoKaiLun/Sift)](https://github.com/YaoKaiLun/Sift/releases/latest)
 [![macOS 15+](https://img.shields.io/badge/macOS-15%2B-black)](https://www.apple.com/macos/)
@@ -7,7 +9,7 @@
 
 Sift 是面向 macOS 的开源 Git diff 阅读器。它把多个仓库及其 worktree 放在同一侧栏中，集中展示文件改动、未推送提交和可操作的 hunk，适合审查 AI 生成或人工编写的代码变更。
 
-系统要求：macOS 15（Sequoia）或更高版本。
+系统要求：macOS 15（Sequoia）或更高版本。界面跟随系统语言：首选语言以 `zh` 开头时使用中文，否则使用英文。
 
 ![Sift 主界面：仓库与 worktree、改动文件列表、统一 diff](docs/images/screenshot.png)
 

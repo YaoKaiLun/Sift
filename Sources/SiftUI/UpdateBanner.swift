@@ -1,5 +1,6 @@
 import SwiftUI
 import UpdateKit
+import SiftLocalization
 
 struct UpdateBanner: View {
     let version: Version
@@ -7,7 +8,7 @@ struct UpdateBanner: View {
 
     var body: some View {
         Button(action: onRestart) {
-            Text("\(version.description) 已就绪 — 点击重启")
+            Text(L10n.updateReady(version.description))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 14)
@@ -16,7 +17,7 @@ struct UpdateBanner: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
-        .help("重启并安装更新")
+        .help(L10n.restartToInstall)
     }
 }
 

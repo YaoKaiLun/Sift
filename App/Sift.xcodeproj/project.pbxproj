@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA0000000000000000000012 /* SiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000011 /* SiftUI */; };
+		AA0000000000000000000015 /* SiftLocalization in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000014 /* SiftLocalization */; };
 		AA0000000000000000000020 /* SiftApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000030 /* SiftApp.swift */; };
 		AA0000000000000000000021 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000031 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
@@ -24,6 +25,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000012 /* SiftUI in Frameworks */,
+				AA0000000000000000000015 /* SiftLocalization in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,10 +72,12 @@
 			);
 			dependencies = (
 				AA0000000000000000000013 /* PBXTargetDependency */,
+				AA0000000000000000000016 /* PBXTargetDependency */,
 			);
 			name = Sift;
 			packageProductDependencies = (
 				AA0000000000000000000011 /* SiftUI */,
+				AA0000000000000000000014 /* SiftLocalization */,
 			);
 			productName = Sift;
 			productReference = AA0000000000000000000003 /* Sift.app */;
@@ -101,6 +105,7 @@
 			knownRegions = (
 				en,
 				Base,
+				"zh-Hans",
 			);
 			mainGroup = AA0000000000000000000004;
 			packageReferences = (
@@ -141,6 +146,10 @@
 		AA0000000000000000000013 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			productRef = AA0000000000000000000011 /* SiftUI */;
+		};
+		AA0000000000000000000016 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			productRef = AA0000000000000000000014 /* SiftLocalization */;
 		};
 /* End PBXTargetDependency section */
 
@@ -358,6 +367,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA0000000000000000000010 /* XCLocalSwiftPackageReference "../" */;
 			productName = SiftUI;
+		};
+		AA0000000000000000000014 /* SiftLocalization */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000010 /* XCLocalSwiftPackageReference "../" */;
+			productName = SiftLocalization;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

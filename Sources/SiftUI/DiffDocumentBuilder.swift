@@ -1,6 +1,7 @@
 import AppKit
 import GitKit
 import DiffEngine
+import SiftLocalization
 
 public struct DiffHunkHeader: Sendable, Equatable {
     public let id: String
@@ -338,7 +339,7 @@ public enum DiffDocumentBuilder {
                 path: entry.status.path, added: entry.added, deleted: entry.deleted,
                 changeKind: kind))
             let note = statusNote(
-                "这是生成文件或体积过大的文件（\(reason.explanation)），已默认折叠。\n",
+                L10n.collapsedNote(reason: reason.explanation) + "\n",
                 paragraph: paragraph, font: font)
             left.append(note)
             right?.append(note)
@@ -380,16 +381,16 @@ public enum DiffDocumentBuilder {
                     range: NSRange(location: $0.range.location + offset, length: $0.range.length))
             })
         case .binary, .image:
-            let note = statusNote("二进制文件\n", paragraph: paragraph, font: font)
+            let note = statusNote(L10n.binaryFile + "\n", paragraph: paragraph, font: font)
             left.append(note)
             right?.append(note)
         case .modeChangeOnly(let oldMode, let newMode):
-            let note = statusNote("只有文件权限变化  \(oldMode) → \(newMode)\n",
+            let note = statusNote(L10n.modeChangeNote(oldMode: oldMode, newMode: newMode) + "\n",
                                   paragraph: paragraph, font: font)
             left.append(note)
             right?.append(note)
         default:
-            let note = statusNote("此文件没有文本差异\n", paragraph: paragraph, font: font)
+            let note = statusNote(L10n.noTextDiff + "\n", paragraph: paragraph, font: font)
             left.append(note)
             right?.append(note)
         }

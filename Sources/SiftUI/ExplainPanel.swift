@@ -1,6 +1,7 @@
 import SwiftUI
 import RepoStore
 import AIClient
+import SiftLocalization
 
 /// 从右侧滑出的解释面板。错误只显示在这里，不占用全局 alert。
 struct ExplainPanel: View {
@@ -10,10 +11,10 @@ struct ExplainPanel: View {
         @Bindable var store = store
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Text("解释")
+                Text(L10n.explain)
                     .font(Theme.headerFont)
                 Spacer(minLength: 8)
-                PlainIconButton(systemName: "xmark", help: "关闭") {
+                PlainIconButton(systemName: "xmark", help: L10n.close) {
                     store.closeExplainPanel()
                 }
             }
@@ -41,7 +42,7 @@ struct ExplainPanel: View {
                        !store.isExplainThinking,
                        store.explainStreamingText.isEmpty,
                        store.explainError == nil {
-                        Text("选中代码后点「解释这段」。")
+                        Text(L10n.explainHint)
                             .font(Theme.emptyDescriptionFont)
                             .foregroundStyle(.secondary)
                     }
@@ -64,7 +65,7 @@ struct ExplainPanel: View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
-            Text("思考中...")
+            Text(L10n.thinking)
                 .font(Theme.secondaryFont)
                 .foregroundStyle(.secondary)
         }
@@ -74,7 +75,7 @@ struct ExplainPanel: View {
         @Bindable var store = store
         let canSend = !store.explainDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return HStack(spacing: 6) {
-            TextField("追问同一选区…", text: $store.explainDraft)
+            TextField(L10n.followUpPlaceholder, text: $store.explainDraft)
                 .textFieldStyle(.plain)
                 .font(Theme.interfaceFont)
                 .iBeamCursor()
@@ -90,7 +91,7 @@ struct ExplainPanel: View {
             .buttonStyle(.plain)
             .disabled(!canSend)
             .pointerCursor()
-            .help("发送")
+            .help(L10n.send)
         }
         .padding(.leading, 12)
         .padding(.trailing, 6)
@@ -102,7 +103,7 @@ struct ExplainPanel: View {
     private func transcriptBlock(_ turn: ExplainTurn) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if turn.role == .user {
-                Text("追问")
+                Text(L10n.followUp)
                     .font(Theme.secondaryFont)
                     .foregroundStyle(.secondary)
             }

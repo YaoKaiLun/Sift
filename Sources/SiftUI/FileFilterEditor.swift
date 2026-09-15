@@ -1,6 +1,7 @@
 import SwiftUI
 import DiffEngine
 import RepoStore
+import SiftLocalization
 
 struct FileFilterEditor: View {
     @Environment(RepoStore.self) private var store
@@ -13,12 +14,12 @@ struct FileFilterEditor: View {
                 .font(Theme.codeFont)
                 .frame(minWidth: 280, minHeight: 200)
             HStack {
-                Button("恢复默认") {
+                Button(L10n.restoreDefaults) {
                     text = FileFilter.defaultPatterns.joined(separator: "\n")
                 }
                 .buttonStyle(BorderedActionButtonStyle())
                 Spacer(minLength: 0)
-                Button("应用过滤") {
+                Button(L10n.applyFilter) {
                     apply()
                 }
                 .buttonStyle(BorderedActionButtonStyle())

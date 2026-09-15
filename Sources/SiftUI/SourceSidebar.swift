@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import GitKit
 import RepoStore
+import SiftLocalization
 
 public extension Notification.Name {
     static let siftAddRepository = Notification.Name("app.sift.addRepository")
@@ -18,11 +19,11 @@ struct SourceSidebar: View {
     var body: some View {
         @Bindable var store = store
         VStack(spacing: 0) {
-            PaneHeader(title: "仓库",
+            PaneHeader(title: L10n.repositories,
                        showsDivider: false,
                        leadingInset: trafficLightInset,
                        trailing: {
-                PlainIconButton(systemName: "plus", help: "添加仓库", action: presentOpenPanel)
+                PlainIconButton(systemName: "plus", help: L10n.addRepository, action: presentOpenPanel)
             })
 
             ScrollView {
@@ -49,28 +50,28 @@ struct SourceSidebar: View {
             }
             .overlay {
                 if store.repositories.isEmpty {
-                    PaneEmptyState(title: "还没有仓库",
+                    PaneEmptyState(title: L10n.noRepositories,
                                    systemImage: "folder.badge.plus",
-                                   description: "点右上角的 + 添加")
+                                   description: L10n.noRepositoriesHint)
                 }
             }
 
             HStack(spacing: 2) {
-                PlainIconMenu(systemName: store.appearance.symbolName, help: "外观") {
+                PlainIconMenu(systemName: store.appearance.symbolName, help: L10n.appearance) {
                     Button { store.appearance = .system } label: {
-                        Label("跟随系统", systemImage: "circle.lefthalf.filled")
+                        Label(L10n.followSystem, systemImage: "circle.lefthalf.filled")
                     }
                     Button { store.appearance = .light } label: {
-                        Label("浅色", systemImage: "sun.max")
+                        Label(L10n.lightAppearance, systemImage: "sun.max")
                     }
                     Button { store.appearance = .dark } label: {
-                        Label("深色", systemImage: "moon")
+                        Label(L10n.darkAppearance, systemImage: "moon")
                     }
                 }
                 updateFooterButton
                 PlainIconButton(systemName: "gearshape",
                                 isSelected: store.showsExplainSettings,
-                                help: "模型配置") {
+                                help: L10n.modelSettings) {
                     store.showsExplainSettings.toggle()
                 }
                 Spacer(minLength: 0)
@@ -120,7 +121,7 @@ struct SourceSidebar: View {
         .onHover { hoveredRow = $0 ? id : nil }
         .onTapGesture { toggleExpanded(repository.root) }
         .contextMenu {
-            Button("移除此仓库", role: .destructive) {
+            Button(L10n.removeRepository, role: .destructive) {
                 store.removeRepository(root: repository.root)
             }
         }
@@ -217,17 +218,17 @@ struct SourceSidebar: View {
     private var updateFooterButton: some View {
         switch updates.state {
         case .available(let update):
-            Button("更新") { updates.download() }
+            Button(L10n.update) { updates.download() }
                 .buttonStyle(UpdateCapsuleButtonStyle())
-                .help("下载 \(update.version.description)")
+                .help(L10n.downloadVersion(update.version.description))
         case .downloading:
-            Button("下载中…") {}
+            Button(L10n.downloading) {}
                 .buttonStyle(UpdateCapsuleButtonStyle())
                 .disabled(true)
         case .ready:
-            Button("重启") { updates.restart() }
+            Button(L10n.restart) { updates.restart() }
                 .buttonStyle(UpdateCapsuleButtonStyle())
-                .help("重启并安装更新")
+                .help(L10n.restartToInstall)
         default:
             EmptyView()
         }
@@ -253,8 +254,8 @@ struct SourceSidebar: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "添加"
-        panel.message = "选择一个 Git 仓库目录"
+        panel.prompt = L10n.add
+        panel.message = L10n.chooseGitRepository
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await store.addRepository(at: url) }
     }

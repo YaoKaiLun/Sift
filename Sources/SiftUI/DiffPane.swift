@@ -4,6 +4,7 @@ import GitKit
 import DiffEngine
 import RepoStore
 import Highlighter
+import SiftLocalization
 
 struct DiffPane: View {
     @Environment(RepoStore.self) private var store
@@ -61,15 +62,15 @@ struct DiffPane: View {
     @ViewBuilder
     private var continuousContent: some View {
         if store.selectedWorktree == nil {
-            PaneEmptyState(title: "选择一个文件", systemImage: "doc.text")
+            PaneEmptyState(title: L10n.selectFile, systemImage: "doc.text")
         } else if store.fileStatuses.isEmpty && !store.isLoadingFileList {
-            PaneEmptyState(title: "没有改动", systemImage: "checkmark.circle")
+            PaneEmptyState(title: L10n.noChanges, systemImage: "checkmark.circle")
         } else if let document = store.diffDocument {
             diffStack(document: document)
         } else if !store.continuousPlan.isEmpty || store.isLoadingFileList {
             ProgressView().controlSize(.small)
         } else {
-            PaneEmptyState(title: "没有改动", systemImage: "checkmark.circle")
+            PaneEmptyState(title: L10n.noChanges, systemImage: "checkmark.circle")
         }
     }
 
@@ -78,20 +79,20 @@ struct DiffPane: View {
         switch store.loadedDiff {
         case .none:
             if store.selectedFile == nil {
-                PaneEmptyState(title: "选择一个文件", systemImage: "doc.text")
+                PaneEmptyState(title: L10n.selectFile, systemImage: "doc.text")
             } else {
                 ProgressView().controlSize(.small)
             }
         case .ready(let diff):
             switch diff.content {
             case .empty:
-                PaneEmptyState(title: "此文件没有文本差异", systemImage: "equal.circle")
+                PaneEmptyState(title: L10n.noTextDiff, systemImage: "equal.circle")
             case .binary:
-                PaneEmptyState(title: "二进制文件", systemImage: "doc.badge.gearshape")
+                PaneEmptyState(title: L10n.binaryFile, systemImage: "doc.badge.gearshape")
             case .image(let image):
                 ImageDiffView(image: image)
             case .modeChangeOnly(let oldMode, let newMode):
-                PaneEmptyState(title: "只有文件权限变化",
+                PaneEmptyState(title: L10n.modeChangeOnly,
                                systemImage: "lock.rotation",
                                description: "\(oldMode) → \(newMode)")
             case .textual:
@@ -169,7 +170,7 @@ struct DiffPane: View {
         HStack(spacing: 8) {
             PlainIconButton(systemName: "doc.on.doc",
                             isSelected: store.usesContinuousDiff,
-                            help: store.usesContinuousDiff ? "切换为单文件" : "切换为连续滚动") {
+                            help: store.usesContinuousDiff ? L10n.switchToSingleFile : L10n.switchToContinuous) {
                 store.usesContinuousDiff.toggle()
             }
             PlainIconButton(systemName: store.showsBlame ? "person.crop.circle.fill" : "person.crop.circle",
@@ -190,9 +191,9 @@ struct DiffPane: View {
     }
 
     private var blameHelp: String {
-        if store.usesContinuousDiff { return "连续滚动模式下不可用" }
-        if showsImageDiff { return "图片预览不可用" }
-        return store.showsBlame ? "隐藏 blame 侧槽" : "显示 blame 侧槽"
+        if store.usesContinuousDiff { return L10n.blameUnavailableContinuous }
+        if showsImageDiff { return L10n.blameUnavailableImage }
+        return store.showsBlame ? L10n.hideBlame : L10n.showBlame
     }
 
     @ViewBuilder
@@ -206,7 +207,7 @@ struct DiffPane: View {
 
     /// 栏头只放整条路径，文件名不再拆出来。连续滚动跟视口顶部的文件走。
     private var headerTitle: String {
-        headerFilePath ?? "差异"
+        headerFilePath ?? L10n.diff
     }
 
     private var headerFilePath: String? {
@@ -232,14 +233,14 @@ struct DiffPane: View {
 
     private func headerChangeHelp(_ kind: FileChangeKind) -> String {
         switch kind {
-        case .modified: "已修改"
-        case .added: "新增"
-        case .deleted: "已删除"
-        case .renamed: "已重命名"
-        case .copied: "已复制"
-        case .typeChanged: "类型变化"
-        case .unmerged: "冲突"
-        case .untracked: "未跟踪"
+        case .modified: L10n.modified
+        case .added: L10n.added
+        case .deleted: L10n.deleted
+        case .renamed: L10n.renamed
+        case .copied: L10n.copied
+        case .typeChanged: L10n.typeChanged
+        case .unmerged: L10n.unmerged
+        case .untracked: L10n.untracked
         case .unmodified: ""
         }
     }
@@ -588,11 +589,11 @@ private struct CollapsedFileView: View {
                 .font(Theme.codeFont)
                 .lineLimit(1)
                 .truncationMode(.head)
-            Text("这是生成文件或体积过大的文件（\(reason.explanation)），已默认折叠。")
+            Text(L10n.collapsedNote(reason: reason.explanation))
                 .font(Theme.emptyDescriptionFont)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("仍要查看", action: onExpand)
+            Button(L10n.viewAnyway, action: onExpand)
                 .buttonStyle(BorderedActionButtonStyle())
         }
         .padding(24)
@@ -659,7 +660,7 @@ enum CommitPatchCollapser {
             .prefix { !$0.hasPrefix("@@") }
             .joined(separator: "\n")
         let trimmed = header.trimmingCharacters(in: .newlines)
-        return trimmed + "\n（已折叠：\(reason.explanation)）\n"
+        return trimmed + "\n\(L10n.collapsedStub(reason: reason.explanation))\n"
     }
 }
 

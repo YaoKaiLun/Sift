@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import RepoStore
+import SiftLocalization
 
 public struct ContentView: View {
     @Environment(RepoStore.self) private var store
@@ -87,19 +88,19 @@ public struct ContentView: View {
                 .padding(.bottom, 16)
             }
         }
-        .alert("出错了",
+        .alert(L10n.somethingWentWrong,
                isPresented: .constant(store.errorMessage != nil),
                presenting: store.errorMessage) { _ in
-            Button("好") { store.errorMessage = nil }
+            Button(L10n.ok) { store.errorMessage = nil }
         } message: { message in
             Text(message)
         }
-        .alert("检查更新",
+        .alert(L10n.checkUpdatesTitle,
                isPresented: Binding(
                 get: { updates.userMessage != nil },
                 set: { if !$0 { updates.userMessage = nil } }),
                presenting: updates.userMessage) { _ in
-            Button("好") { updates.userMessage = nil }
+            Button(L10n.ok) { updates.userMessage = nil }
         } message: { message in
             Text(message)
         }

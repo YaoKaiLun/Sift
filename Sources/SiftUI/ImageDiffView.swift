@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import GitKit
+import SiftLocalization
 
 enum ImagePreviewLayout {
     static func fittedSize(pixelWidth: Int, pixelHeight: Int, maxWidth: CGFloat) -> CGSize {
@@ -27,17 +28,17 @@ struct ImageDiffView: View {
         let old = DisplaySide(image.old)
         let new = DisplaySide(image.new)
         if old == nil && new == nil {
-            PaneEmptyState(title: "二进制文件", systemImage: "doc.badge.gearshape")
+            PaneEmptyState(title: L10n.binaryFile, systemImage: "doc.badge.gearshape")
         } else if let old, let new {
             HStack(spacing: 0) {
-                column(title: "旧", side: old)
+                column(title: L10n.old, side: old)
                 Divider()
-                column(title: "新", side: new)
+                column(title: L10n.new, side: new)
             }
         } else if let old {
-            column(title: "旧", side: old)
+            column(title: L10n.old, side: old)
         } else if let new {
-            column(title: "新", side: new)
+            column(title: L10n.new, side: new)
         }
     }
 
@@ -64,7 +65,7 @@ struct ImageDiffView: View {
                             .font(Theme.secondaryFont)
                             .foregroundStyle(.secondary)
                     case .tooLarge(let byteCount):
-                        Text("图片过大，无法预览")
+                        Text(L10n.imageTooLarge)
                             .font(Theme.emptyTitleFont)
                             .foregroundStyle(.secondary)
                         Text(Self.byteText(byteCount))

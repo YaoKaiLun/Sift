@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import RepoStore
+import SiftLocalization
 
 /// 模型配置弹窗：接口地址、模型、API Key。点保存才写入。
 public struct SettingsView: View {
@@ -18,17 +19,17 @@ public struct SettingsView: View {
             Divider()
             VStack(alignment: .leading, spacing: 22) {
                 labeledField(
-                    title: "接口地址",
+                    title: L10n.endpoint,
                     text: $baseURL,
                     prompt: "https://api.example.com/v1/chat/completions")
                 labeledField(
-                    title: "模型",
+                    title: L10n.model,
                     text: $model,
-                    prompt: "例如 gpt-4o 或 openai/gpt-4o")
+                    prompt: L10n.modelPrompt)
                 apiKeyField
                 HStack {
                     Spacer(minLength: 0)
-                    Button("保存", action: save)
+                    Button(L10n.save, action: save)
                         .buttonStyle(FilledActionButtonStyle())
                 }
                 .padding(.top, 4)
@@ -44,14 +45,14 @@ public struct SettingsView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("模型配置")
+            Text(L10n.modelSettings)
                 .font(Theme.headerFont)
             Spacer(minLength: 8)
             Button(action: { store.closeExplainSettings() }) {
                 Image(systemName: "xmark")
             }
             .buttonStyle(DialogIconButtonStyle())
-            .help("关闭")
+            .help(L10n.close)
         }
         .padding(.horizontal, 20)
         .frame(height: Theme.paneHeaderHeight)
@@ -76,9 +77,9 @@ public struct SettingsView: View {
             HStack(spacing: 8) {
                 Group {
                     if revealsAPIKey {
-                        TextField("", text: $apiKey, prompt: Text("请输入 API Key"))
+                        TextField("", text: $apiKey, prompt: Text(L10n.enterAPIKey))
                     } else {
-                        SecureField("", text: $apiKey, prompt: Text("请输入 API Key"))
+                        SecureField("", text: $apiKey, prompt: Text(L10n.enterAPIKey))
                     }
                 }
                 .textFieldStyle(.plain)
@@ -94,7 +95,7 @@ public struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .help(revealsAPIKey ? "隐藏密钥" : "显示密钥")
+                .help(revealsAPIKey ? L10n.hideSecret : L10n.showSecret)
             }
             .padding(.horizontal, 12)
             .frame(height: 36)

@@ -4,6 +4,7 @@ import Observation
 import GitKit
 import DiffEngine
 import AIClient
+import SiftLocalization
 
 public struct RepositoryEntry: Identifiable, Sendable {
     public let root: URL
@@ -261,7 +262,7 @@ public final class RepoStore {
                 await select(worktree: first)
             }
         } catch {
-            errorMessage = "无法添加仓库：\(error)"
+            errorMessage = L10n.cannotAddRepository("\(error)")
         }
     }
 
@@ -407,7 +408,7 @@ public final class RepoStore {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                await MainActor.run { self?.errorMessage = "无法加载 diff：\(error)" }
+                await MainActor.run { self?.errorMessage = L10n.cannotLoadDiff("\(error)") }
             }
         }
         await diffTask?.value
@@ -549,7 +550,7 @@ public final class RepoStore {
                 }
             } catch {
                 guard !Task.isCancelled else { return }
-                await MainActor.run { self?.errorMessage = "无法加载 diff：\(error)" }
+                await MainActor.run { self?.errorMessage = L10n.cannotLoadDiff("\(error)") }
             }
         }
         await diffTask?.value
@@ -786,7 +787,7 @@ public final class RepoStore {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self?.isLoadingFileList = false
-                    self?.errorMessage = "无法读取文件状态：\(error)"
+                    self?.errorMessage = L10n.cannotReadStatus("\(error)")
                 }
             }
         }
@@ -833,7 +834,7 @@ public final class RepoStore {
         let targets = files.filter(\.isUntracked)
         guard !targets.isEmpty else {
             if let tracked = files.first(where: { !$0.isUntracked }) {
-                errorMessage = "无法删除已跟踪文件：\(tracked.path)"
+                errorMessage = L10n.cannotDeleteTracked(tracked.path)
             }
             return
         }
@@ -928,7 +929,7 @@ public final class RepoStore {
             await refreshFileList(invalidateAllCachedDiffs: false)
             await reloadMutatedContinuous(paths: Set(paths))
         } catch {
-            errorMessage = "无法完成操作：\(error)"
+            errorMessage = L10n.cannotCompleteOperation("\(error)")
         }
     }
 
@@ -1077,7 +1078,7 @@ public final class RepoStore {
                     status: entry.status, staged: entry.staged, from: repository)
                 fresh.append((entry.id, diff))
             } catch {
-                errorMessage = "无法加载 diff：\(error)"
+                errorMessage = L10n.cannotLoadDiff("\(error)")
             }
         }
         for item in fresh where continuousPlan.contains(where: { $0.id == item.id }) {
@@ -1126,7 +1127,7 @@ public final class RepoStore {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     self?.continuousExpandTasks[entry.id] = nil
-                    self?.errorMessage = "无法加载 diff：\(error)"
+                    self?.errorMessage = L10n.cannotLoadDiff("\(error)")
                 }
             }
         }
@@ -1324,15 +1325,15 @@ public final class RepoStore {
         if let explain = error as? ExplainError {
             switch explain {
             case .notConfigured:
-                return "请先在设置中填写 Base URL、API 密钥和模型。"
+                return L10n.explainNotConfigured
             case .httpStatus(let code):
-                return "请求失败（HTTP \(code)）。"
+                return L10n.requestFailedHTTP(code)
             }
         }
         if let urlError = error as? URLError {
-            return "网络错误：\(urlError.localizedDescription)"
+            return L10n.networkError(urlError.localizedDescription)
         }
-        return "请求失败：\(error.localizedDescription)"
+        return L10n.requestFailed(error.localizedDescription)
     }
 
     /// 刷新时重新跑 `git worktree list`。添加仓库时拍的快照不会跟着磁盘变。

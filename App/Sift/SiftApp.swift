@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import RepoStore
+import SiftLocalization
 import SiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -58,30 +59,30 @@ struct SiftApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("检查更新…") {
+                Button(L10n.checkForUpdates) {
                     Task { await updates.check(automatic: false) }
                 }
                 if case .downloading = updates.state {
-                    Button("取消下载") {
+                    Button(L10n.cancelDownload) {
                         updates.cancelDownload()
                     }
                 }
             }
             CommandGroup(after: .newItem) {
-                Button("添加仓库…") {
+                Button(L10n.addRepositoryEllipsis) {
                     NotificationCenter.default.post(name: .siftAddRepository, object: nil)
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
-            CommandMenu("显示") {
-                Picker("外观", selection: $store.appearance) {
-                    Text("跟随系统").tag(AppearancePreference.system)
-                    Text("浅色").tag(AppearancePreference.light)
-                    Text("深色").tag(AppearancePreference.dark)
+            CommandMenu(L10n.displayMenu) {
+                Picker(L10n.appearance, selection: $store.appearance) {
+                    Text(L10n.followSystem).tag(AppearancePreference.system)
+                    Text(L10n.lightAppearance).tag(AppearancePreference.light)
+                    Text(L10n.darkAppearance).tag(AppearancePreference.dark)
                 }
             }
             CommandGroup(replacing: .appSettings) {
-                Button("模型配置…") {
+                Button(L10n.modelSettingsEllipsis) {
                     store.openExplainSettings()
                 }
                 .keyboardShortcut(",", modifiers: .command)
