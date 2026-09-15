@@ -138,10 +138,9 @@ struct SourceSidebar: View {
             let after = location.y > Theme.sidebarRowHeight / 2
             store.moveRepository(id: dragged, relativeTo: repository.root.path, after: after)
             return true
-        }, isTargeted: Binding(
-            get: { dropTarget == repository.root },
-            set: { dropTarget = $0 ? repository.root : nil }
-        ))
+        }, isTargeted: { targeted in
+            dropTarget = targeted ? repository.root : nil
+        })
         .contextMenu {
             if repository.isPinned {
                 Button(L10n.unpinRepository) {
