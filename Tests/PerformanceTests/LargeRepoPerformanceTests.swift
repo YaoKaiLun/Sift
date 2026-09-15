@@ -115,6 +115,8 @@ final class LargeRepoPerformanceTests: XCTestCase {
                         sectionHeading: "func example()", lines: lines)
         let diff = FileDiff(path: "a.swift", originalPath: nil, content: .textual([hunk]))
 
+        _ = DiffDocumentBuilder.build(diff)
+
         let start = ContinuousClock.now
         _ = DiffDocumentBuilder.build(diff)
         let elapsed = ContinuousClock.now - start
