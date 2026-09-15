@@ -1116,7 +1116,7 @@ struct DiffTextView: NSViewRepresentable {
             blamePopover?.performClose(nil)
             let popover = NSPopover()
             popover.behavior = .transient
-            popover.contentSize = NSSize(width: 480, height: 380)
+            popover.contentSize = NSSize(width: 480, height: 260)
             popover.contentViewController = NSHostingController(
                 rootView: BlamePopoverView(content: content))
             blamePopover = popover
@@ -1366,14 +1366,12 @@ struct BlameCommitContent {
     let author: String
     let timeText: String
     let header: String
-    let patch: String
 
     static func fallback(for line: BlameLine) -> BlameCommitContent {
         BlameCommitContent(
             author: line.author,
             timeText: BlameCommitContent.formatted(line.authorTime),
-            header: line.summary,
-            patch: "")
+            header: line.summary)
     }
 
     static func formatted(_ date: Date) -> String {
@@ -1400,17 +1398,11 @@ private struct BlamePopoverView: View {
                         .font(.system(size: 11, design: .monospaced))
                         .textSelection(.enabled)
                 }
-                if !content.patch.isEmpty {
-                    Divider()
-                    Text(content.patch)
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(width: 480, height: 360)
+        .frame(width: 480, height: 240)
     }
 }
 

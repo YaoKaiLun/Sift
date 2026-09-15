@@ -486,14 +486,13 @@ struct DiffPane: View {
     private func loadBlameCommit(_ line: BlameLine) async -> BlameCommitContent {
         let timeText = BlameCommitContent.formatted(line.authorTime)
         guard let worktree = store.selectedWorktree,
-              let shown = await GitRepository(root: worktree.path).showCommit(sha: line.sha) else {
+              let header = await GitRepository(root: worktree.path).showCommitHeader(sha: line.sha) else {
             return BlameCommitContent.fallback(for: line)
         }
         return BlameCommitContent(
             author: line.author,
             timeText: timeText,
-            header: shown.header,
-            patch: CommitPatchCollapser.collapse(shown.patch))
+            header: header)
     }
 }
 

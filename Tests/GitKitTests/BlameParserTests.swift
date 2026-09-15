@@ -126,4 +126,22 @@ final class BlameParserTests: XCTestCase {
         let missing = await GitRepository(root: fixture.url).showCommit(sha: String(repeating: "0", count: 40))
         XCTAssertNil(missing)
     }
+
+    func testShowCommitHeaderDoesNotLoadPatch() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write("line1\n", to: "a.txt")
+        try fixture.write("line2\n", to: "b.txt")
+        try fixture.commit("header only")
+        let sha = try fixture.git("rev-parse", "HEAD")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let loadedHeader = await GitRepository(root: fixture.url).showCommitHeader(sha: sha)
+        let header = try XCTUnwrap(loadedHeader)
+
+        XCTAssertTrue(header.contains("header only"))
+        XCTAssertFalse(header.contains("diff --git"))
+        let missing = await GitRepository(root: fixture.url)
+            .showCommitHeader(sha: String(repeating: "0", count: 40))
+        XCTAssertNil(missing)
+    }
 }

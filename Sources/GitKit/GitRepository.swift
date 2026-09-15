@@ -191,6 +191,15 @@ public struct GitRepository: Sendable {
         return BlameParser.parse(output.stdout)
     }
 
+    /// commit 的 medium header，不读取 patch。全 0 SHA（尚未提交）返回 nil。
+    public func showCommitHeader(sha: String) async -> String? {
+        guard sha.contains(where: { $0 != "0" }) else { return nil }
+        let output = try? await runner.runAllowingFailure(
+            ["show", "--format=medium", "--no-patch", sha], in: root, optionalLocks: true)
+        guard let output, output.exitCode == 0 else { return nil }
+        return String(decoding: output.stdout, as: UTF8.self)
+    }
+
     /// commit 的 medium header 与纯 patch。全 0 SHA（尚未提交）返回 nil。
     public func showCommit(sha: String) async -> (header: String, patch: String)? {
         guard sha.contains(where: { $0 != "0" }) else { return nil }
