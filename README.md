@@ -1,64 +1,131 @@
 # Sift
 
-面向 macOS 的 Git diff 阅读器。把多个仓库、多个 worktree 放在同一侧栏里，文件列表和 hunk 操作都对着鼠标，用来审查 AI 写出来的改动。
+[![CI](https://github.com/YaoKaiLun/Sift/actions/workflows/ci.yml/badge.svg)](https://github.com/YaoKaiLun/Sift/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/YaoKaiLun/Sift)](https://github.com/YaoKaiLun/Sift/releases/latest)
+[![macOS 15+](https://img.shields.io/badge/macOS-15%2B-black)](https://www.apple.com/macos/)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-系统要求：[macOS 15](https://www.apple.com/macos/)（Sequoia）或更高。
+Sift 是面向 macOS 的开源 Git diff 阅读器。它把多个仓库及其 worktree 放在同一侧栏中，集中展示文件改动、未推送提交和可操作的 hunk，适合审查 AI 生成或人工编写的代码变更。
+
+系统要求：macOS 15（Sequoia）或更高版本。
 
 ![Sift 主界面：仓库与 worktree、改动文件列表、统一 diff](docs/images/screenshot.png)
 
-## 特性
+## 核心能力
 
-- **多仓库、多 worktree**：左侧按仓库分组，每个仓库下列出主工作树和其余 worktree，改动数量挂在条目上。
-- **文件级审查**：中栏分已暂存 / 未暂存（未跟踪混在未暂存里，用 `?` 标记）。支持平铺和树视图，勾选框整文件暂存或取消暂存。可用过滤规则一键隐藏图片、测试文件等。
-- **未推送提交**：当前 worktree 领先上游时，左栏出现 `↑N`；展开后可阅读这些 commit 的文件 diff，不提供暂存或放弃。
-- **应用内更新**：Sift 菜单可检查 GitHub Release；有新版本时侧栏出现「更新」，下载完成后点就绪条重启安装。
-- **清晰的 unified diff**：右侧只读文本视图，行号、增删色、文件头条状态都按审查阅读来排。图片改动走预览，过大或生成文件默认折叠。
-- **Hunk 操作**：每个可见 hunk 头上常显「暂存区块 / 放弃区块 / 取消暂存 / 解释」，不用悬停才出现。
-- **连续滚动**：把当前 worktree 下全部改动拼成一篇长 diff，进入视口再展开。
-- **Blame**：单文件模式下可打开作者侧槽，点一行看提交说明。
-- **AI 解释**：选区或 hunk 上点「解释」，右侧滑出面板流式说明。兼容 OpenAI 的 `/chat/completions`，密钥只进钥匙串。未配置时弹出模型配置，不发请求。
+- **多仓库与多 worktree**：在一个窗口中切换多个仓库、主工作树和关联 worktree。
+- **文件级审查**：区分已暂存、未暂存和未跟踪文件；支持平铺视图、树视图、整文件暂存和取消暂存。
+- **Hunk 操作**：直接暂存、取消暂存或放弃单个 hunk，无需切换到终端。
+- **统一与连续 diff**：阅读带行号和语法高亮的 unified diff，或连续浏览当前 worktree 的全部改动。
+- **文件过滤**：使用 glob 规则隐藏图片、测试文件及其他不需要审查的内容。
+- **未推送提交**：按提交查看当前分支领先上游的变更，同时保留文件级浏览方式。
+- **图片与大文件处理**：预览图片改动，默认折叠生成文件和体积过大的文件。
+- **Blame**：在单文件模式中查看行作者和提交信息。
+- **AI 解释**：将选区或 hunk 发送到兼容 OpenAI `/chat/completions` 的服务，流式返回代码说明。
+- **应用内更新**：检查 GitHub Release，下载新版本并在确认后重启安装。
 
-明确不做：commit graph、分支管理、rebase、冲突解决、push / pull。
+Sift 专注于改动审查，不提供提交图、分支管理、rebase、冲突解决、push 或 pull。
 
-## 下载
+## 安装
 
-到 [Releases](https://github.com/YaoKaiLun/Sift/releases) 下载最新 `Sift-<version>.dmg`。
+从 [GitHub Releases](https://github.com/YaoKaiLun/Sift/releases/latest) 下载最新的 `Sift-<version>.dmg`。
 
-1. 打开 DMG，**双击 `Install Sift.command`**（复制到「应用程序」并去掉隔离标记）。
-2. 或把 `Sift.app` 拖进「应用程序」，再在终端执行：
+### 使用安装脚本
+
+打开 DMG，双击 `Install Sift.command`。脚本会：
+
+1. 将 `Sift.app` 复制到 `/Applications`；
+2. 移除浏览器下载产生的 quarantine 属性；
+3. 启动 Sift。
+
+如果 `/Applications/Sift.app` 已存在，脚本会先替换旧版本。
+
+### 手动安装
+
+也可以将 `Sift.app` 拖入「应用程序」，然后执行：
 
 ```bash
 xattr -cr /Applications/Sift.app
+open /Applications/Sift.app
 ```
 
-当前 Release 未做 Apple 公证。从浏览器下载会带 quarantine，不按上面两步处理时，系统可能提示「已损坏，无法打开」。
+> [!IMPORTANT]
+> 当前 Release 使用 ad hoc 签名，尚未使用 Apple Developer ID 签名和公证。macOS Gatekeeper 可能提示应用已损坏或无法验证开发者。请只从本仓库的 GitHub Releases 下载，并在确认来源后移除 quarantine 属性。
 
-## 使用
+## 快速开始
 
-1. 左侧栏头点 **+**，选一个 Git 仓库目录。同一仓库下的 worktree 会自动列出来。
-2. 点 worktree，中栏出现改动文件。点文件看 diff；勾选框只改暂存状态，不切换当前文件。
-3. 在 hunk 头上暂存、取消暂存或放弃该块。放弃未跟踪文件会先确认。
-4. 需要说明某段改动时，点 hunk 上的「解释」，或选中若干行后点「解释这段」。
-5. 左下角齿轮打开 **模型配置**（也可 `⌘,`）。填写接口地址、模型和 API Key 后保存。接口可以是 `https://api.example.com/v1`，也可以带 `/chat/completions`。
-6. 栏头两个图标：连续滚动、blame（连续模式下 blame 不可用）。左下角另一个按钮切换浅色 / 深色 / 跟随系统。
-7. **Sift** 菜单可检查更新；有新版本时侧栏外观按钮和齿轮之间出现「更新」。下载节的 GitHub Release 手动安装仍可用。
+1. 点击左侧栏头的「+」，选择一个 Git 仓库。同一仓库下的 worktree 会自动列出。
+2. 选择 worktree，在中栏查看已暂存、未暂存和未跟踪文件。
+3. 点击文件，在右栏阅读 diff；点击文件前的勾选框可暂存或取消暂存整个文件。
+4. 在 hunk 标题栏中暂存、取消暂存或放弃该 hunk。放弃未跟踪文件前会要求确认。
+5. 使用上下方向键切换可见文件；按住 `Shift` 可扩展文件选择范围。
+
+中栏漏斗按钮用于配置文件过滤。点「应用过滤」后开始隐藏匹配项；按钮处于选中状态时，再点一次可取消过滤。
+
+右栏支持单文件 / 连续浏览、统一 / 分栏 diff 和 blame。连续浏览模式下不提供 blame。
+
+## AI 与隐私
+
+AI 解释默认关闭。首次使用「解释」时，需要在「模型配置」中填写接口地址、模型和 API Key：
+
+- 接口需兼容 OpenAI `/chat/completions`；
+- API Key 保存在 macOS 钥匙串中；
+- 未完成配置时不会发送网络请求；
+- 只有主动点击「解释」或「解释这段」时，相关代码和上下文才会发送到所配置的服务。
+
+数据处理方式取决于所配置的模型服务。使用前应确认该服务的隐私政策和代码数据处理规则。
 
 ## 本地开发
 
-需要 Xcode 26+。
+开发环境需要 Xcode 26 或更高版本，以及 Swift 6.2 或更高版本。
 
 ```bash
-./Scripts/preflight.sh   # 构建、单元测试、性能门禁
+git clone https://github.com/YaoKaiLun/Sift.git
+cd Sift
+./Scripts/preflight.sh
 ```
 
-用 Xcode 打开 `App/Sift.xcodeproj` 即可运行。
+`preflight.sh` 会依次执行构建、单元测试和大型仓库性能测试。也可以用 Xcode 打开 `App/Sift.xcodeproj`，选择 `Sift` scheme 后运行。
+
+命令行构建并启动 Debug 版本：
+
+```bash
+xcodebuild \
+  -project App/Sift.xcodeproj \
+  -scheme Sift \
+  -configuration Debug \
+  -derivedDataPath /tmp/SiftBuild \
+  -destination 'platform=macOS' \
+  build
+open /tmp/SiftBuild/Build/Products/Debug/Sift.app
+```
 
 ## 打包
 
+首次生成应用图标需要安装 Pillow：
+
 ```bash
-pip install Pillow          # 首次生成图标时需要
-./Scripts/build.sh          # 构建 dist/Sift.app
-./Scripts/package.sh        # 打包为 dist/Sift-<version>.dmg
+python3 -m pip install Pillow
+./Scripts/build.sh
+./Scripts/package.sh
 ```
 
-打 `v*` tag 后，GitHub Actions 会构建 DMG 并挂到对应 Release。
+- `build.sh` 构建使用 ad hoc 签名的 `dist/Sift.app`；
+- `package.sh` 生成 `dist/Sift-<version>.dmg`；
+- 推送 `v*` tag 后，GitHub Actions 会构建 DMG 并添加到对应的 Release。
+
+## 贡献
+
+欢迎通过 [GitHub Issues](https://github.com/YaoKaiLun/Sift/issues) 报告问题或提出功能建议。
+
+提交代码前请运行：
+
+```bash
+./Scripts/preflight.sh
+```
+
+Pull Request 应说明改动目的、验证方式和可见的界面变化。涉及较大功能或交互调整时，建议先创建 Issue 讨论范围。
+
+## 许可证
+
+Sift 基于 [MIT License](LICENSE) 发布。
