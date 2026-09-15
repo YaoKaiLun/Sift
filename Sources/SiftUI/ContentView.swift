@@ -7,6 +7,7 @@ public struct ContentView: View {
     @Environment(UpdateController.self) private var updates
     @State private var showsSidebar = true
     @State private var isFullScreen = false
+    @State private var activeSplit: SplitOverlayLayout.Divider?
 
     public init() {}
 
@@ -34,14 +35,24 @@ public struct ContentView: View {
                 fileListWidth: store.fileListWidth)
             ZStack(alignment: .leading) {
                 if let x = hits.sidebar {
-                    SplitDivider(width: sidebarWidthBinding, range: 180...340,
-                                 onDragEnded: { store.persist() })
+                    SplitDivider(isActive: activeSplit == .sidebar)
                         .offset(x: x)
                 }
-                SplitDivider(width: fileListWidthBinding, range: 240...520,
-                             onDragEnded: { store.persist() })
+                SplitDivider(isActive: activeSplit == .fileList)
                     .offset(x: hits.fileList)
             }
+            .allowsHitTesting(false)
+        }
+        .background {
+            SplitDragMonitor(
+                showsSidebar: showsSidebar,
+                sidebarWidth: CGFloat(store.sidebarWidth),
+                fileListWidth: CGFloat(store.fileListWidth),
+                onSidebarWidth: { store.sidebarWidth = Double($0) },
+                onFileListWidth: { store.fileListWidth = Double($0) },
+                onDragEnded: { store.persist() },
+                onActiveChange: { activeSplit = $0 })
+            .frame(width: 1, height: 1)
         }
         .frame(minWidth: 860, maxWidth: .infinity,
                minHeight: 480, maxHeight: .infinity)
@@ -94,12 +105,6 @@ public struct ContentView: View {
         }
     }
 
-    private var sidebarWidthBinding: Binding<CGFloat> {
-        Binding(
-            get: { CGFloat(store.sidebarWidth) },
-            set: { store.sidebarWidth = Double($0) })
-    }
-
     private var settingsOverlay: some View {
         ZStack {
             Color.black.opacity(0.28)
@@ -116,11 +121,6 @@ public struct ContentView: View {
         .onExitCommand { store.closeExplainSettings() }
     }
 
-    private var fileListWidthBinding: Binding<CGFloat> {
-        Binding(
-            get: { CGFloat(store.fileListWidth) },
-            set: { store.fileListWidth = Double($0) })
-    }
 }
 
 public extension AppearancePreference {

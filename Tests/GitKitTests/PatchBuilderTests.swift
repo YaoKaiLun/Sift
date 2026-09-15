@@ -31,6 +31,8 @@ final class PatchBuilderTests: XCTestCase {
             DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 1, text: "new"),
         ])
         let patch = PatchBuilder.build(hunk: hunk, path: "new.txt", kind: .added)
+        XCTAssertTrue(patch.contains("new file mode 100644\n"),
+                       "缺少 new file mode 时 apply -R 会把 /dev/null 当成相对路径")
         XCTAssertTrue(patch.contains("--- /dev/null\n"))
         XCTAssertTrue(patch.contains("+++ b/new.txt\n"))
     }
@@ -40,6 +42,8 @@ final class PatchBuilderTests: XCTestCase {
             DiffLine(kind: .deletion, oldLineNumber: 1, newLineNumber: nil, text: "gone"),
         ])
         let patch = PatchBuilder.build(hunk: hunk, path: "gone.txt", kind: .deleted)
+        XCTAssertTrue(patch.contains("deleted file mode 100644\n"),
+                       "缺少 deleted file mode 时 apply -R 会去读相对路径 dev/null")
         XCTAssertTrue(patch.contains("--- a/gone.txt\n"))
         XCTAssertTrue(patch.contains("+++ /dev/null\n"))
     }

@@ -10,6 +10,9 @@ public struct RepositoryEntry: Identifiable, Sendable {
     public let name: String
     public var worktrees: [Worktree]
     public var id: URL { root }
+
+    /// 与 `Worktree.sidebarRowID` 成对使用，避免主工作树与仓库根同路径时撞 id。
+    public var sidebarRowID: String { "repo:\(root.path)" }
 }
 
 /// UI 的唯一数据源。所有 git 工作都通过 async 方法发起，

@@ -51,6 +51,8 @@ public enum Theme {
     public static let statsColumnWidth: CGFloat = 58
     /// 树视图每层缩进。只缩箭头和文件名，复选框始终一列。
     public static let indentWidth: CGFloat = 16
+    /// 侧栏工作树相对仓库名的缩进。不再给每行预留 disclosure 槽。
+    public static let sidebarChildIndent: CGFloat = 8
     /// 树视图展开箭头槽，文件行同样占位才能和目录名对齐。
     public static let disclosureColumnWidth: CGFloat = 12
     /// 选中行左侧的强调条宽度。

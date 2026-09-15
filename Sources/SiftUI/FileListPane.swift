@@ -30,13 +30,12 @@ struct FileListPane: View {
                 HStack(spacing: 2) {
                     PlainIconButton(systemName: "line.3.horizontal.decrease",
                                     isSelected: store.hidesFilteredFiles,
-                                    help: "隐藏已过滤的文件") {
-                        store.hidesFilteredFiles.toggle()
-                    }
-                    PlainIconButton(systemName: "slider.horizontal.3",
-                                    isSelected: showsFilterEditor,
-                                    help: "编辑过滤规则") {
-                        showsFilterEditor.toggle()
+                                    help: store.hidesFilteredFiles ? "取消过滤" : "过滤文件") {
+                        if store.hidesFilteredFiles {
+                            store.hidesFilteredFiles = false
+                        } else {
+                            showsFilterEditor = true
+                        }
                     }
                     .popover(isPresented: $showsFilterEditor, arrowEdge: .bottom) {
                         FileFilterEditor()

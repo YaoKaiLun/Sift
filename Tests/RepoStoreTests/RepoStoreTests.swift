@@ -403,6 +403,22 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertTrue(store.usesContinuousDiff)
         XCTAssertFalse(store.showsBlame)
     }
+
+    func testSidebarRowIDsDoNotCollideWhenMainWorktreeIsRepositoryRoot() {
+        let root = URL(fileURLWithPath: "/Users/me/qianwen")
+        let main = Worktree(path: root, head: "d6e825f3ae10f004b5aed3892a368ab16b232dd8",
+                            branch: "feat/ykl/sse-json-patch",
+                            isBare: false, isDetached: false, isLocked: false, isMain: true)
+        let linked = Worktree(path: URL(fileURLWithPath: "/tmp/quark-agent-llm-tracing"),
+                              head: "4e3f9aa18ad3cd17df4b36886030715102a728d9",
+                              branch: "feature/quark-agent-llm-tracing",
+                              isBare: false, isDetached: false, isLocked: false, isMain: false)
+        let repo = RepositoryEntry(root: root, name: "qianwen", worktrees: [main, linked])
+        let ids = [repo.sidebarRowID] + repo.worktrees.map(\.sidebarRowID)
+        XCTAssertEqual(Set(ids).count, ids.count,
+                       "仓库根与主工作树同路径时，侧栏行 id 不得碰撞，否则当前分支会渲染成空行")
+        XCTAssertNotEqual(repo.sidebarRowID, main.sidebarRowID)
+    }
 }
 
 private final class RecordingKeychain: KeychainStore, @unchecked Sendable {

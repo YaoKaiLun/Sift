@@ -27,15 +27,18 @@ struct SourceSidebar: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(store.repositories.enumerated()), id: \.element.id) { index, repository in
+                    ForEach(Array(store.repositories.enumerated()), id: \.element.sidebarRowID) { index, repository in
                         repositoryRow(repository, isFirst: index == 0)
+                            .id(repository.sidebarRowID)
                         if !collapsedRoots.contains(repository.root) {
-                            ForEach(repository.worktrees) { worktree in
+                            ForEach(repository.worktrees, id: \.sidebarRowID) { worktree in
                                 worktreeRow(worktree)
+                                    .id(worktree.sidebarRowID)
                                 if store.selectedWorktree?.path == worktree.path,
                                    expandedCommitWorktrees.contains(worktree.path) {
                                     ForEach(store.unpushedCommits) { commit in
                                         commitRow(commit)
+                                            .id("commit:\(commit.sha)")
                                     }
                                 }
                             }
@@ -147,24 +150,22 @@ struct SourceSidebar: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-            } else {
-                Color.clear.frame(width: Theme.disclosureColumnWidth)
             }
-            Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: 11))
-                .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .frame(width: Theme.statusColumnWidth, alignment: .center)
+            Group {
+                if worktree.isMain {
+                    GitBranchSymbol()
+                        .frame(width: 13, height: 14)
+                } else {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 11))
+                }
+            }
+            .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .frame(width: Theme.statusColumnWidth, alignment: .center)
             Text(worktree.displayName)
                 .font(Theme.interfaceFont)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if !worktree.isMain {
-                Text(worktree.path.lastPathComponent)
-                    .font(Theme.secondaryFont)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-            }
             Spacer(minLength: 8)
             if showsUnpushed {
                 Text("↑\(store.unpushedCommits.count)")
@@ -177,7 +178,7 @@ struct SourceSidebar: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.leading, Theme.indentWidth)
+        .padding(.leading, Theme.sidebarChildIndent)
         .rowSurface(isSelected: selected, isHovered: hoveredRow == id,
                     height: Theme.sidebarRowHeight)
         .pointerCursor()
@@ -200,7 +201,8 @@ struct SourceSidebar: View {
                 .truncationMode(.tail)
             Spacer(minLength: 0)
         }
-        .padding(.leading, Theme.indentWidth * 2 + Theme.disclosureColumnWidth)
+        .padding(.leading, Theme.sidebarChildIndent + Theme.statusColumnWidth
+                 + Theme.rowSpacing + Theme.indentWidth)
         .rowSurface(isSelected: selected, isHovered: hoveredRow == id,
                     height: Theme.sidebarRowHeight)
         .pointerCursor()

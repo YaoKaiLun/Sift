@@ -1239,6 +1239,14 @@ final class DiffHostView: NSView {
         super.layout()
         coordinator?.hostDidLayout()
     }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if SplitOverlayLayout.shouldPassthroughLeadingHit(local.x) {
+            return nil
+        }
+        return super.hitTest(point)
+    }
 }
 
 /// 分栏右栏：只承载「解释这段」，不处理 hunk hover。
