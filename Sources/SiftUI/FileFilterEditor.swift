@@ -16,10 +16,12 @@ struct FileFilterEditor: View {
                 Button("恢复默认") {
                     text = FileFilter.defaultPatterns.joined(separator: "\n")
                 }
+                .buttonStyle(BorderedActionButtonStyle())
                 Spacer(minLength: 0)
                 Button("应用过滤") {
                     apply()
                 }
+                .buttonStyle(BorderedActionButtonStyle())
             }
         }
         .padding(12)

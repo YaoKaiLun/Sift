@@ -594,7 +594,7 @@ private struct CollapsedFileView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button("仍要查看", action: onExpand)
-                .controlSize(.small)
+                .buttonStyle(BorderedActionButtonStyle())
         }
         .padding(24)
         .frame(maxWidth: 380)

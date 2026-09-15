@@ -154,12 +154,13 @@ struct SourceSidebar: View {
             Group {
                 if worktree.isMain {
                     GitBranchSymbol()
-                        .frame(width: 13, height: 14)
                 } else {
                     Image(systemName: "arrow.triangle.branch")
-                        .font(.system(size: 11))
+                        .font(.system(size: 12, weight: .regular))
+                        .symbolRenderingMode(.monochrome)
                 }
             }
+            .frame(width: 13, height: 14)
             .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             .frame(width: Theme.statusColumnWidth, alignment: .center)
             Text(worktree.displayName)

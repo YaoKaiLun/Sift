@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// 侧栏主工作树用的 Git 分支符号：竖线 + 右上弯出，两端和分叉处各一个节点。
+/// 侧栏主工作树的 Git 分支符号。线宽和节点按 13×14 画，和 `arrow.triangle.branch` 11–12pt 同粗细。
 struct GitBranchSymbol: View {
     var body: some View {
         Canvas { context, size in
-            let lineWidth = max(1.25, size.width * 0.11)
-            let radius = max(1.55, size.width * 0.145)
+            let lineWidth = max(1.1, size.width * 0.085)
+            let radius = max(1.1, size.width * 0.09)
             let bottom = CGPoint(x: size.width * 0.30, y: size.height * 0.82)
             let stemTop = CGPoint(x: size.width * 0.30, y: size.height * 0.22)
             let junction = CGPoint(x: size.width * 0.30, y: size.height * 0.48)
