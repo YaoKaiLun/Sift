@@ -269,18 +269,26 @@ struct FileListPane: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 handleFileClick(status: status, staged: staged)
+                if NSApp.currentEvent?.clickCount == 2 {
+                    store.openFileInDefaultApp(status)
+                }
             }
         }
         .rowSurface(isSelected: selected, isHovered: hoveredRow == id)
         .pointerCursor()
         .onHover { hoveredRow = $0 ? id : nil }
-        .untrackedDeleteContextMenu(
-            targets: deleteTargets(for: status, staged: staged),
-            isMutating: store.isMutating
-        ) { targets in
-            filesPendingDelete = targets
-            confirmsDelete = true
-        }
+        .fileRowContextMenu(
+            discardTargets: discardTargets(for: status, staged: staged),
+            deleteTargets: deleteTargets(for: status, staged: staged),
+            isMutating: store.isMutating,
+            onDiscard: { files in
+                Task { await store.discardWorktree(files: files) }
+            },
+            onDelete: { targets in
+                filesPendingDelete = targets
+                confirmsDelete = true
+            }
+        )
     }
 
     private var orderedFileIDs: [String] {
@@ -304,8 +312,8 @@ struct FileListPane: View {
         }
     }
 
-    /// 右键若点在已选集合里，就处理整组；否则只处理这一行。菜单只在目标全是未跟踪时出现。
-    private func deleteTargets(for status: FileStatus, staged: Bool) -> [FileStatus] {
+    /// 右键若点在已选集合里，就处理整组；否则只处理这一行。
+    private func selectedFiles(for status: FileStatus, staged: Bool) -> [FileStatus] {
         let id = RepoStore.fileSelectionID(
             path: status.path, staged: staged, commitSHA: store.selectedCommit?.sha)
         let ids = store.selectedFileIDs.contains(id) ? store.selectedFileIDs : [id]
@@ -319,8 +327,18 @@ struct FileListPane: View {
             unique.append(file)
         }
         unique.sort { $0.path < $1.path }
-        guard showsFileCheckboxes, !unique.isEmpty, unique.allSatisfy(\.isUntracked) else { return [] }
         return unique
+    }
+
+    private func discardTargets(for status: FileStatus, staged: Bool) -> [FileStatus] {
+        guard showsFileCheckboxes, !staged else { return [] }
+        return selectedFiles(for: status, staged: staged).filter(\.canDiscardWorktree)
+    }
+
+    /// 未跟踪文件走删除确认；已跟踪改动走放弃修改。
+    private func deleteTargets(for status: FileStatus, staged: Bool) -> [FileStatus] {
+        guard showsFileCheckboxes else { return [] }
+        return selectedFiles(for: status, staged: staged).filter(\.isUntracked)
     }
 
     private var deleteDialogTitle: String {
@@ -336,18 +354,28 @@ struct FileListPane: View {
 
 private extension View {
     @ViewBuilder
-    func untrackedDeleteContextMenu(targets: [FileStatus],
-                                    isMutating: Bool,
-                                    onDelete: @escaping ([FileStatus]) -> Void) -> some View {
-        if targets.isEmpty {
+    func fileRowContextMenu(discardTargets: [FileStatus],
+                            deleteTargets: [FileStatus],
+                            isMutating: Bool,
+                            onDiscard: @escaping ([FileStatus]) -> Void,
+                            onDelete: @escaping ([FileStatus]) -> Void) -> some View {
+        if discardTargets.isEmpty && deleteTargets.isEmpty {
             self
         } else {
             self.contextMenu {
-                Button(L10n.deleteFiles(count: targets.count),
-                       role: .destructive) {
-                    onDelete(targets)
+                if !discardTargets.isEmpty {
+                    Button(L10n.discardWorktreeChanges(count: discardTargets.count)) {
+                        onDiscard(discardTargets)
+                    }
+                    .disabled(isMutating)
                 }
-                .disabled(isMutating)
+                if !deleteTargets.isEmpty {
+                    Button(L10n.deleteFiles(count: deleteTargets.count),
+                           role: .destructive) {
+                        onDelete(deleteTargets)
+                    }
+                    .disabled(isMutating)
+                }
             }
         }
     }

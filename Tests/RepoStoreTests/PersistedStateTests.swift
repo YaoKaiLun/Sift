@@ -22,6 +22,7 @@ final class PersistedStateTests: XCTestCase {
         let store = PersistedStateStore(fileURL: url)
         let original = PersistedState(
             repositoryBookmarks: [Data([1, 2, 3])],
+            pinnedRepositoryPaths: ["/repos/pinned"],
             selectedWorktreePath: "/repos/main",
             usesTreeView: true,
             appearance: .dark)
@@ -29,6 +30,7 @@ final class PersistedStateTests: XCTestCase {
 
         let loaded = PersistedStateStore(fileURL: url).load()
         XCTAssertEqual(loaded.repositoryBookmarks, [Data([1, 2, 3])])
+        XCTAssertEqual(loaded.pinnedRepositoryPaths, ["/repos/pinned"])
         XCTAssertEqual(loaded.selectedWorktreePath, "/repos/main")
         XCTAssertTrue(loaded.usesTreeView)
         XCTAssertEqual(loaded.appearance, .dark)
@@ -93,6 +95,18 @@ final class PersistedStateTests: XCTestCase {
         XCTAssertEqual(state.fileListWidth, 300)
         XCTAssertFalse(state.usesContinuousDiff)
         XCTAssertFalse(state.showsBlame)
+    }
+
+    /// 旧版 state.json 没有置顶字段时，必须落到空列表。
+    func testMissingPinnedRepositoriesDefaultToEmpty() throws {
+        let url = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"repositoryBookmarks":[],"usesTreeView":true}"#.utf8).write(to: url)
+
+        let state = PersistedStateStore(fileURL: url).load()
+        XCTAssertTrue(state.pinnedRepositoryPaths.isEmpty)
     }
 
     /// 旧版 state.json 没有过滤字段时，必须落到不隐藏 + 缺省规则。

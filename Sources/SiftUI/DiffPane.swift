@@ -168,6 +168,9 @@ struct DiffPane: View {
     private var headerTrailing: some View {
         @Bindable var store = store
         HStack(spacing: 8) {
+            PlainIconButton(systemName: "magnifyingglass", help: L10n.find) {
+                NotificationCenter.default.post(name: .siftFindInDiff, object: nil)
+            }
             PlainIconButton(systemName: "doc.on.doc",
                             isSelected: store.usesContinuousDiff,
                             help: store.usesContinuousDiff ? L10n.switchToSingleFile : L10n.switchToContinuous) {

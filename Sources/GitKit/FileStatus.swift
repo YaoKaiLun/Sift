@@ -41,6 +41,10 @@ public struct FileStatus: Sendable, Equatable, Identifiable, Hashable {
     public var hasUnstagedChanges: Bool {
         !isUntracked && worktreeStatus != .unmodified
     }
+    /// 可用 `git restore --worktree` 丢掉的工作区改动。冲突中的文件除外。
+    public var canDiscardWorktree: Bool {
+        hasUnstagedChanges && worktreeStatus != .unmerged
+    }
     /// 工作区分组：未暂存改动和未跟踪文件放在一起，和 SourceTree 一样。
     public var hasWorkingTreeChanges: Bool {
         isUntracked || hasUnstagedChanges

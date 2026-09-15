@@ -10,10 +10,18 @@ public struct RepositoryEntry: Identifiable, Sendable {
     public let root: URL
     public let name: String
     public var worktrees: [Worktree]
+    public var isPinned: Bool
     public var id: URL { root }
 
     /// 与 `Worktree.sidebarRowID` 成对使用，避免主工作树与仓库根同路径时撞 id。
     public var sidebarRowID: String { "repo:\(root.path)" }
+
+    public init(root: URL, name: String, worktrees: [Worktree], isPinned: Bool = false) {
+        self.root = root
+        self.name = name
+        self.worktrees = worktrees
+        self.isPinned = isPinned
+    }
 }
 
 /// UI 的唯一数据源。所有 git 工作都通过 async 方法发起，
@@ -218,6 +226,8 @@ public final class RepoStore {
     private(set) var explainTask: Task<Void, Never>?
     /// 测试可注入；生产路径走 `OpenAICompatibleProvider`。
     var explainProviderOverride: (any ExplainProvider)?
+    /// 测试可注入；生产路径走系统默认应用。
+    var fileOpener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     /// 解释流世代。过期的完成/取消回写必须丢掉，不能动当前句柄。
     private var explainGeneration: UInt64 = 0
     private var lastExplainSelectedText = ""
@@ -251,23 +261,24 @@ public final class RepoStore {
     // MARK: - 仓库管理
 
     public func addRepository(at url: URL) async {
-        do {
-            let root = try await GitRepository.discoverRoot(at: url, runner: GitRunner())
-            guard !repositories.contains(where: { $0.root == root }) else { return }
-            let worktrees = try await GitRepository(root: root).worktrees()
-            repositories.append(RepositoryEntry(
-                root: root, name: root.lastPathComponent, worktrees: worktrees))
-            persist()
-            if selectedWorktree == nil, let first = worktrees.first {
-                await select(worktree: first)
-            }
-        } catch {
-            errorMessage = L10n.cannotAddRepository("\(error)")
-        }
+        await addRepository(at: url, placement: .afterPinned)
+    }
+
+    public func setRepositoryPinned(root: URL, pinned: Bool) {
+        applyListOrder(RepositoryListOrder.setPinned(
+            pinned, id: RepositoryListOrder.canonicalPath(for: root), in: listItems()))
+    }
+
+    public func moveRepository(id: String, relativeTo targetID: String, after: Bool) {
+        applyListOrder(RepositoryListOrder.move(
+            id: RepositoryListOrder.canonicalPath(for: URL(fileURLWithPath: id)),
+            relativeTo: RepositoryListOrder.canonicalPath(for: URL(fileURLWithPath: targetID)),
+            after: after, in: listItems()))
     }
 
     public func removeRepository(root: URL) {
-        repositories.removeAll { $0.root == root }
+        let id = RepositoryListOrder.canonicalPath(for: root)
+        repositories.removeAll { RepositoryListOrder.canonicalPath(for: $0.root) == id }
         if let selected = selectedWorktree,
            !repositories.contains(where: { $0.worktrees.contains { $0.path == selected.path } }) {
             selectedWorktree = nil
@@ -845,6 +856,26 @@ public final class RepoStore {
         }
     }
 
+    public func discardWorktree(files: [FileStatus]) async {
+        let targets = files.filter(\.canDiscardWorktree)
+        guard !targets.isEmpty else { return }
+        await mutate(paths: targets.map(\.path)) { repo in
+            try await repo.discardWorktree(paths: targets.map(\.path))
+        }
+    }
+
+    public func openFileInDefaultApp(_ file: FileStatus) {
+        guard let worktree = selectedWorktree else { return }
+        let url = worktree.path.appendingPathComponent(file.path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            errorMessage = L10n.cannotOpenFile(file.path)
+            return
+        }
+        if !fileOpener(url) {
+            errorMessage = L10n.cannotOpenFile(file.path)
+        }
+    }
+
     public func stage(hunk: Hunk, file: FileStatus? = nil, stagedSide: Bool? = nil) async {
         guard let file = file ?? selectedFile else { return }
         let staged = stagedSide ?? selectedFileIsStaged
@@ -887,9 +918,10 @@ public final class RepoStore {
             else { continue }
             // 书签过期但路径仍能解析时，照样拿安全作用域，并在后面重写书签。
             _ = url.startAccessingSecurityScopedResource()
-            await addRepository(at: url)
+            await addRepository(at: url, placement: .appending)
             if isStale { needsBookmarkRewrite = true }
         }
+        applyPersistedPins(state.pinnedRepositoryPaths)
         if needsBookmarkRewrite {
             persist()
         }
@@ -901,6 +933,61 @@ public final class RepoStore {
     }
 
     // MARK: - 私有
+
+    private enum RepositoryPlacement {
+        case afterPinned
+        case appending
+    }
+
+    private func addRepository(at url: URL, placement: RepositoryPlacement) async {
+        do {
+            let root = try await GitRepository.discoverRoot(at: url, runner: GitRunner())
+            guard !repositories.contains(where: { $0.root == root }) else { return }
+            let worktrees = try await GitRepository(root: root).worktrees()
+            let entry = RepositoryEntry(
+                root: root, name: root.lastPathComponent, worktrees: worktrees, isPinned: false)
+            switch placement {
+            case .afterPinned:
+                let index = repositories.firstIndex(where: { !$0.isPinned }) ?? repositories.count
+                repositories.insert(entry, at: index)
+            case .appending:
+                repositories.append(entry)
+            }
+            persist()
+            if selectedWorktree == nil, let first = worktrees.first {
+                await select(worktree: first)
+            }
+        } catch {
+            errorMessage = L10n.cannotAddRepository("\(error)")
+        }
+    }
+
+    private func listItems() -> [RepositoryListItem] {
+        repositories.map {
+            RepositoryListItem(id: RepositoryListOrder.canonicalPath(for: $0.root), isPinned: $0.isPinned)
+        }
+    }
+
+    private func applyListOrder(_ items: [RepositoryListItem]) {
+        let byPath = Dictionary(uniqueKeysWithValues: repositories.map {
+            (RepositoryListOrder.canonicalPath(for: $0.root), $0)
+        })
+        repositories = items.compactMap { item in
+            guard var entry = byPath[item.id] else { return nil }
+            entry.isPinned = item.isPinned
+            return entry
+        }
+        persist()
+    }
+
+    private func applyPersistedPins(_ paths: [String]) {
+        let pinned = Set(paths.map { RepositoryListOrder.canonicalPath(for: URL(fileURLWithPath: $0)) })
+        let items = repositories.map {
+            let id = RepositoryListOrder.canonicalPath(for: $0.root)
+            return RepositoryListItem(id: id, isPinned: pinned.contains(id))
+        }
+        applyListOrder(RepositoryListOrder.normalize(items))
+    }
 
     private func setLoadedDiff(_ diff: LoadedDiff?) {
         loadedDiff = diff
@@ -1205,6 +1292,9 @@ public final class RepoStore {
         }
         let state = PersistedState(
             repositoryBookmarks: bookmarks,
+            pinnedRepositoryPaths: repositories.filter(\.isPinned).map {
+                RepositoryListOrder.canonicalPath(for: $0.root)
+            },
             selectedWorktreePath: selectedWorktree?.path.path,
             usesTreeView: usesTreeView,
             usesSplitDiff: usesSplitDiff,
@@ -1343,7 +1433,8 @@ public final class RepoStore {
         for entry in repositories {
             do {
                 let worktrees = try await GitRepository(root: entry.root).worktrees()
-                updated.append(RepositoryEntry(root: entry.root, name: entry.name, worktrees: worktrees))
+                updated.append(RepositoryEntry(
+                    root: entry.root, name: entry.name, worktrees: worktrees, isPinned: entry.isPinned))
             } catch {
                 updated.append(entry)
             }

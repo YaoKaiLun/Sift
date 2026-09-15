@@ -143,6 +143,13 @@ public struct GitRepository: Sendable {
             arguments, in: root, stdin: Data(patch.utf8), optionalLocks: false)
     }
 
+    /// 把工作区已跟踪路径恢复成 index 内容，不碰暂存区。
+    public func discardWorktree(paths: [String]) async throws {
+        guard !paths.isEmpty else { return }
+        _ = try await runner.run(
+            ["restore", "--worktree", "--"] + paths, in: root, optionalLocks: false)
+    }
+
     /// 删除未跟踪文件。路径必须在仓库内且 git status 确认为未跟踪；已跟踪路径绝不 `removeItem`。
     public func deleteUntracked(path: String) async throws {
         let target = root.appendingPathComponent(path).standardizedFileURL

@@ -15,6 +15,13 @@ struct SourceSidebar: View {
     @State private var collapsedRoots: Set<URL> = []
     @State private var hoveredRow: String?
     @State private var expandedCommitWorktrees: Set<URL> = []
+    @State private var dropSlot: DropSlot?
+    @State private var groupHeights: [String: CGFloat] = [:]
+
+    private enum DropSlot: Equatable {
+        case before(URL)
+        case after(URL)
+    }
 
     var body: some View {
         @Bindable var store = store
@@ -29,23 +36,11 @@ struct SourceSidebar: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(store.repositories.enumerated()), id: \.element.sidebarRowID) { index, repository in
-                        repositoryRow(repository, isFirst: index == 0)
+                        repositoryGroup(repository, isFirst: index == 0)
                             .id(repository.sidebarRowID)
-                        if !collapsedRoots.contains(repository.root) {
-                            ForEach(repository.worktrees, id: \.sidebarRowID) { worktree in
-                                worktreeRow(worktree)
-                                    .id(worktree.sidebarRowID)
-                                if store.selectedWorktree?.path == worktree.path,
-                                   expandedCommitWorktrees.contains(worktree.path) {
-                                    ForEach(store.unpushedCommits) { commit in
-                                        commitRow(commit)
-                                            .id("commit:\(commit.sha)")
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
+                .onPreferenceChange(RepositoryGroupHeightKey.self) { groupHeights = $0 }
                 .padding(.bottom, 8)
             }
             .overlay {
@@ -91,8 +86,61 @@ struct SourceSidebar: View {
         }
     }
 
+    private func repositoryGroup(_ repository: RepositoryEntry, isFirst: Bool) -> some View {
+        let id = repository.sidebarRowID
+        let height = groupHeights[id] ?? Theme.sidebarRowHeight
+        return VStack(alignment: .leading, spacing: 0) {
+            repositoryRow(repository, isFirst: isFirst)
+            if !collapsedRoots.contains(repository.root) {
+                ForEach(repository.worktrees, id: \.sidebarRowID) { worktree in
+                    worktreeRow(worktree)
+                        .id(worktree.sidebarRowID)
+                    if store.selectedWorktree?.path == worktree.path,
+                       expandedCommitWorktrees.contains(worktree.path) {
+                        ForEach(store.unpushedCommits) { commit in
+                            commitRow(commit)
+                                .id("commit:\(commit.sha)")
+                        }
+                    }
+                }
+            }
+        }
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: RepositoryGroupHeightKey.self,
+                    value: [id: geometry.size.height])
+            }
+        }
+        .overlay(alignment: .top) {
+            if dropSlot == .before(repository.root) { DropInsertionLine() }
+        }
+        .overlay(alignment: .bottom) {
+            if dropSlot == .after(repository.root) { DropInsertionLine() }
+        }
+        .onDrop(of: [.json], delegate: RepositoryReorderDropDelegate(
+            groupHeight: height,
+            onPreview: { after in
+                dropSlot = after ? .after(repository.root) : .before(repository.root)
+            },
+            onExit: {
+                if matchesSlot(dropSlot, root: repository.root) { dropSlot = nil }
+            },
+            onDrop: { path, after in
+                store.moveRepository(id: path, relativeTo: repository.root.path, after: after)
+                dropSlot = nil
+            }))
+    }
+
+    private func matchesSlot(_ slot: DropSlot?, root: URL) -> Bool {
+        switch slot {
+        case .before(let url), .after(let url): url == root
+        case nil: false
+        }
+    }
+
     private func repositoryRow(_ repository: RepositoryEntry, isFirst: Bool) -> some View {
-        let id = "repo:\(repository.root.path)"
+        let id = repository.sidebarRowID
         let collapsed = collapsedRoots.contains(repository.root)
         let hovering = hoveredRow == id
         return HStack(spacing: Theme.rowSpacing) {
@@ -107,20 +155,42 @@ struct SourceSidebar: View {
             }
             .foregroundStyle(.secondary)
             .frame(width: Theme.statusColumnWidth, alignment: .center)
+            .contentShape(Rectangle())
+            .onTapGesture { toggleExpanded(repository.root) }
             Text(repository.name)
                 .font(Theme.repositoryFont)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 0)
+            if repository.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .rowSurface(isSelected: false, isHovered: hoveredRow == id,
                     height: Theme.sidebarRowHeight)
         .pointerCursor()
         .padding(.top, isFirst ? 4 : Theme.sidebarGroupGap)
         .onHover { hoveredRow = $0 ? id : nil }
-        .onTapGesture { toggleExpanded(repository.root) }
+        .draggable(RepositoryDragItem(path: RepositoryListOrder.canonicalPath(for: repository.root))) {
+            Text(repository.name)
+                .font(Theme.repositoryFont)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+        }
         .contextMenu {
+            if repository.isPinned {
+                Button(L10n.unpinRepository) {
+                    store.setRepositoryPinned(root: repository.root, pinned: false)
+                }
+            } else {
+                Button(L10n.pinRepository) {
+                    store.setRepositoryPinned(root: repository.root, pinned: true)
+                }
+            }
+            Divider()
             Button(L10n.removeRepository, role: .destructive) {
                 store.removeRepository(root: repository.root)
             }
@@ -128,7 +198,7 @@ struct SourceSidebar: View {
     }
 
     private func worktreeRow(_ worktree: Worktree) -> some View {
-        let id = "wt:\(worktree.path.path)"
+        let id = worktree.sidebarRowID
         let isCurrent = store.selectedWorktree?.path == worktree.path
         let selected = isCurrent && store.selectedCommit == nil
         let showsUnpushed = isCurrent && !store.unpushedCommits.isEmpty
@@ -258,5 +328,13 @@ struct SourceSidebar: View {
         panel.message = L10n.chooseGitRepository
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await store.addRepository(at: url) }
+    }
+}
+
+private struct RepositoryGroupHeightKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
     }
 }
