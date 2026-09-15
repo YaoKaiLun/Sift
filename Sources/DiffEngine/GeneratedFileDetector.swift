@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SiftLocalization
 
 public enum GeneratedFileReason: Sendable, Equatable {
     /// 命中了某条路径规则，附带规则本身，便于在 UI 中说明原因。
@@ -10,9 +11,9 @@ public enum GeneratedFileReason: Sendable, Equatable {
     /// 展示给用户的说明文字。
     public var explanation: String {
         switch self {
-        case .pathRule(let rule): "匹配规则 \(rule)"
-        case .tooManyLines(let count): "共 \(count) 行"
-        case .tooLarge(let bytes): "共 \(bytes / 1024) KB"
+        case .pathRule(let rule): L10n.matchingRule(rule)
+        case .tooManyLines(let count): L10n.lineCount(count)
+        case .tooLarge(let bytes): L10n.fileSizeKB(bytes / 1024)
         }
     }
 }

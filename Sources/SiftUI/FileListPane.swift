@@ -3,6 +3,7 @@ import AppKit
 import GitKit
 import DiffEngine
 import RepoStore
+import SiftLocalization
 
 struct FileListPane: View {
     @Environment(RepoStore.self) private var store
@@ -17,12 +18,12 @@ struct FileListPane: View {
     var body: some View {
         @Bindable var store = store
         VStack(spacing: 0) {
-            PaneHeader(title: "改动",
+            PaneHeader(title: L10n.changes,
                        subtitle: store.selectedCommit?.shortSHA ?? store.selectedWorktree?.displayName,
                        showsDivider: true,
                        leadingInset: showsSidebar ? 0 : trafficLightInset,
                        leading: {
-                PlainIconButton(systemName: "sidebar.left", help: "显示或隐藏侧边栏") {
+                PlainIconButton(systemName: "sidebar.left", help: L10n.toggleSidebar) {
                     showsSidebar.toggle()
                 }
             },
@@ -30,7 +31,7 @@ struct FileListPane: View {
                 HStack(spacing: 2) {
                     PlainIconButton(systemName: "line.3.horizontal.decrease",
                                     isSelected: store.hidesFilteredFiles,
-                                    help: store.hidesFilteredFiles ? "取消过滤" : "过滤文件") {
+                                    help: store.hidesFilteredFiles ? L10n.clearFilter : L10n.filterFiles) {
                         if store.hidesFilteredFiles {
                             store.hidesFilteredFiles = false
                         } else {
@@ -43,7 +44,7 @@ struct FileListPane: View {
                     PlainIconToggle(selection: $store.usesTreeView,
                                     falseIcon: "list.bullet",
                                     trueIcon: "list.bullet.indent",
-                                    help: "切换平铺视图与树视图")
+                                    help: L10n.toggleFileView)
                 }
             })
 
@@ -70,18 +71,18 @@ struct FileListPane: View {
             }
             .overlay {
                 if store.selectedWorktree == nil {
-                    PaneEmptyState(title: "选择一个工作树", systemImage: "sidebar.left")
+                    PaneEmptyState(title: L10n.selectWorktree, systemImage: "sidebar.left")
                 } else if store.fileStatuses.isEmpty && !store.isLoadingFileList {
-                    PaneEmptyState(title: "没有改动", systemImage: "checkmark.circle")
+                    PaneEmptyState(title: L10n.noChanges, systemImage: "checkmark.circle")
                 } else if store.visibleFileStatuses.isEmpty && !store.isLoadingFileList {
-                    PaneEmptyState(title: "过滤后没有文件", systemImage: "line.3.horizontal.decrease")
+                    PaneEmptyState(title: L10n.noFilesAfterFilter, systemImage: "line.3.horizontal.decrease")
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Theme.contentBackground)
         .confirmationDialog(deleteDialogTitle, isPresented: $confirmsDelete, titleVisibility: .visible) {
-            Button("删除", role: .destructive) {
+            Button(L10n.delete, role: .destructive) {
                 let files = filesPendingDelete
                 Task { await store.deleteUntracked(files: files) }
             }
@@ -99,15 +100,15 @@ struct FileListPane: View {
     private var rows: [Row] {
         var result: [Row] = []
         if store.selectedCommit != nil {
-            append(&result, title: "改动",
+            append(&result, title: L10n.changes,
                    statuses: store.visibleFileStatuses.sorted(by: FileStatus.pathOrder),
                    staged: false)
             return result
         }
-        append(&result, title: "已暂存",
+        append(&result, title: L10n.staged,
                statuses: store.visibleFileStatuses.filter(\.hasStagedChanges).sorted(by: FileStatus.pathOrder),
                staged: true)
-        append(&result, title: "未暂存",
+        append(&result, title: L10n.unstaged,
                statuses: store.visibleFileStatuses.filter(\.hasWorkingTreeChanges).sorted(by: FileStatus.pathOrder),
                staged: false)
         return result
@@ -323,12 +324,12 @@ struct FileListPane: View {
     }
 
     private var deleteDialogTitle: String {
-        filesPendingDelete.count == 1 ? "删除未跟踪文件？" : "删除 \(filesPendingDelete.count) 个未跟踪文件？"
+        L10n.deleteUntrackedTitle(count: filesPendingDelete.count)
     }
 
     private var deleteDialogMessage: String {
         let paths = filesPendingDelete.map(\.path).joined(separator: "\n")
-        return "\(paths)\n此操作无法从 git 恢复。"
+        return L10n.deleteUntrackedMessage(paths: paths)
     }
 
 }
@@ -342,7 +343,7 @@ private extension View {
             self
         } else {
             self.contextMenu {
-                Button(targets.count == 1 ? "删除文件" : "删除 \(targets.count) 个文件",
+                Button(L10n.deleteFiles(count: targets.count),
                        role: .destructive) {
                     onDelete(targets)
                 }
@@ -371,7 +372,7 @@ private struct LineStatsBadge: View {
     var body: some View {
         Group {
             if let stats, stats.isBinary {
-                Text("二进制")
+                Text(L10n.binary)
                     .foregroundStyle(.tertiary)
             } else if let stats {
                 HStack(spacing: 4) {

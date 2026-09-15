@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import GitKit
+import SiftLocalization
 @testable import DiffEngine
 @testable import SiftUI
 
@@ -216,7 +217,7 @@ final class ContinuousDiffTests: XCTestCase {
             sections: [(entry, loaded)], layout: .unified)
 
         XCTAssertTrue(document.text.string.contains("package-lock.json"))
-        XCTAssertTrue(document.text.string.contains("已默认折叠"))
+        XCTAssertTrue(document.text.string.contains(L10n.collapsedNote(reason: L10n.matchingRule("*-lock.json"))))
         XCTAssertFalse(document.text.string.contains("@@"))
         XCTAssertEqual(document.fileHeaders.count, 1)
         XCTAssertTrue(document.fileHeaders[0].isCollapsed)
@@ -352,7 +353,7 @@ final class ContinuousDiffTests: XCTestCase {
                      content: .image(ImageDiff(old: .bytes(Data([1])), new: .bytes(Data([2]))))))
         let document = DiffDocumentBuilder.buildContinuous(
             sections: [(entry, loaded)], layout: .unified)
-        XCTAssertTrue(document.text.string.contains("二进制文件"))
+        XCTAssertTrue(document.text.string.contains(L10n.binaryFile))
         XCTAssertFalse(document.text.string.contains("PNG"))
     }
 }

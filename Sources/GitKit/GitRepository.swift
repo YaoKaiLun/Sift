@@ -1,4 +1,5 @@
 import Foundation
+import SiftLocalization
 
 /// 单个工作树的 git 操作入口。组合 GitRunner 与各解析器，
 /// 对上层屏蔽命令行参数细节。
@@ -147,13 +148,13 @@ public struct GitRepository: Sendable {
         let target = root.appendingPathComponent(path).standardizedFileURL
         let rootStd = root.standardizedFileURL
         guard target.path.hasPrefix(rootStd.path + "/") || target == rootStd else {
-            throw GitError.launchFailed("拒绝删除仓库外的路径：\(path)")
+            throw GitError.launchFailed(L10n.refuseDeleteOutside(path))
         }
         let data = try await runner.run(
             ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--", path], in: root)
         let statuses = try StatusParser.parse(data)
         guard statuses.contains(where: { $0.path == path && $0.isUntracked }) else {
-            throw GitError.launchFailed("拒绝删除已跟踪文件：\(path)")
+            throw GitError.launchFailed(L10n.refuseDeleteTracked(path))
         }
         try FileManager.default.removeItem(at: target)
     }

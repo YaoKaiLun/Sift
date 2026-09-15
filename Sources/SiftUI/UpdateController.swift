@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Observation
 import UpdateKit
+import SiftLocalization
 
 @MainActor
 @Observable
@@ -44,20 +45,20 @@ public final class UpdateController {
             case .upToDate:
                 state = .idle
                 if !automatic {
-                    userMessage = "已是最新版本（\(current.description)）。"
+                    userMessage = L10n.upToDate(current.description)
                 }
             case .available(let update):
                 state = .available(update)
             case .noInstallableAsset:
                 state = .idle
                 if !automatic {
-                    userMessage = "找到了 Release，但没有可安装的 DMG。"
+                    userMessage = L10n.noInstallableDMG
                 }
             }
         } catch {
             state = .failed(error.localizedDescription)
             if !automatic {
-                userMessage = "无法检查更新：\(error.localizedDescription)"
+                userMessage = L10n.cannotCheckUpdates(error.localizedDescription)
             } else {
                 state = .idle
             }
@@ -79,7 +80,7 @@ public final class UpdateController {
             } catch {
                 guard !Task.isCancelled else { return }
                 self.state = .failed(error.localizedDescription)
-                self.userMessage = "无法安装更新，请到 GitHub Release 手动下载。"
+                self.userMessage = L10n.cannotInstallUpdate
             }
         }
     }
@@ -109,7 +110,7 @@ public final class UpdateController {
             try process.run()
             NSApp.terminate(nil)
         } catch {
-            userMessage = "无法安装更新，请到 GitHub Release 手动下载。"
+            userMessage = L10n.cannotInstallUpdate
         }
     }
 }

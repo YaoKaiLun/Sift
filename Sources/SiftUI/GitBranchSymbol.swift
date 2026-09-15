@@ -1,4 +1,5 @@
 import SwiftUI
+import SiftLocalization
 
 /// 侧栏主工作树的 Git 分支符号。线宽和节点按 13×14 画，和 `arrow.triangle.branch` 11–12pt 同粗细。
 struct GitBranchSymbol: View {
@@ -28,6 +29,6 @@ struct GitBranchSymbol: View {
                 context.fill(Path(ellipseIn: rect), with: .foreground)
             }
         }
-        .accessibilityLabel("分支")
+        .accessibilityLabel(L10n.branch)
     }
 }

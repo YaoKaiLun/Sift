@@ -1,5 +1,6 @@
 import XCTest
 import UpdateKit
+import SiftLocalization
 @testable import SiftUI
 
 private struct FixtureReleaseFetcher: ReleaseFetching {
@@ -35,7 +36,7 @@ final class UpdateControllerTests: XCTestCase {
             fetching: FixtureReleaseFetcher(data: fixture))
         await controller.check(automatic: false)
         XCTAssertEqual(controller.state, .idle)
-        XCTAssertEqual(controller.userMessage, "已是最新版本（1.1）。")
+        XCTAssertEqual(controller.userMessage, L10n.upToDate("1.1"))
     }
 }
 

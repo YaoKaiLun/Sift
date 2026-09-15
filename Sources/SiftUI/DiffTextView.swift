@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import GitKit
+import SiftLocalization
 
 /// hunk 头上常显的暂存 / 取消暂存 / 丢弃。未跟踪、二进制、空、折叠不传。
 /// 写操作由 store.mutate 忽略重入，按钮本身不因 isMutating 变灰，避免整排闪一次。
@@ -866,7 +867,7 @@ struct DiffTextView: NSViewRepresentable {
                 stack.removeArrangedSubview(view)
                 view.removeFromSuperview()
             }
-            stack.addArrangedSubview(makeButton(title: "仍要查看",
+            stack.addArrangedSubview(makeButton(title: L10n.viewAnyway,
                                                 action: #selector(expandCollapsedClicked(_:)),
                                                 hunkID: hunkID))
         }
@@ -877,22 +878,22 @@ struct DiffTextView: NSViewRepresentable {
                 view.removeFromSuperview()
             }
             if identity.showsStage {
-                stack.addArrangedSubview(makeButton(title: "暂存区块",
+                stack.addArrangedSubview(makeButton(title: L10n.stageHunk,
                                                     action: #selector(stageClicked(_:)),
                                                     hunkID: hunkID))
             }
             if identity.showsUnstage {
-                stack.addArrangedSubview(makeButton(title: "取消暂存",
+                stack.addArrangedSubview(makeButton(title: L10n.unstageHunk,
                                                     action: #selector(unstageClicked(_:)),
                                                     hunkID: hunkID))
             }
             if identity.showsDiscard {
-                stack.addArrangedSubview(makeButton(title: "放弃区块",
+                stack.addArrangedSubview(makeButton(title: L10n.discardHunk,
                                                     action: #selector(discardClicked(_:)),
                                                     hunkID: hunkID))
             }
             if identity.showsExplain {
-                stack.addArrangedSubview(makeButton(title: "解释",
+                stack.addArrangedSubview(makeButton(title: L10n.explain,
                                                     action: #selector(explainHunkClicked(_:)),
                                                     hunkID: hunkID))
             }
@@ -951,7 +952,7 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         private func makeExplainButton() -> NSButton {
-            HunkActionButton(title: "解释这段", target: self, action: #selector(explainClicked), hunkID: "explain-selection")
+            HunkActionButton(title: L10n.explainSelection, target: self, action: #selector(explainClicked), hunkID: "explain-selection")
         }
 
         private func selectionRect(range: NSRange, textView: NSTextView, in host: NSView) -> NSRect? {
