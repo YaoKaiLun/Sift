@@ -124,6 +124,15 @@ python3 -m pip install Pillow
 ./Scripts/preflight.sh
 ```
 
+面向使用者的提交会自动写入下一个 GitHub Release：
+
+- `feat:`：新增功能；
+- `improve:`：体验改进；
+- `fix:`：问题修复。
+
+其他提交类型不会写入 Release Notes。可使用 scope，例如
+`fix(GitKit): 避免提交详情加载整笔补丁`。
+
 Pull Request 应说明改动目的、验证方式和可见的界面变化。涉及较大功能或交互调整时，建议先创建 Issue 讨论范围。
 
 ## 许可证
