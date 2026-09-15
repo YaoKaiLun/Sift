@@ -75,6 +75,7 @@ final class StatusParserTests: XCTestCase {
         let result = try await status(of: repo)
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result[0].worktreeStatus, .deleted)
+        XCTAssertTrue(result[0].canDiscardWorktree)
     }
 
     /// 类型 2 的记录会消耗两个 NUL 字段。如果解析器没处理，
