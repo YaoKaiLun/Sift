@@ -51,4 +51,13 @@ public enum RepositoryListOrder {
     public static func normalize(_ items: [RepositoryListItem]) -> [RepositoryListItem] {
         items.filter(\.isPinned) + items.filter { !$0.isPinned }
     }
+
+    public static func isAbove(id: String, relativeTo targetID: String,
+                               in items: [RepositoryListItem]) -> Bool {
+        guard let draggedIndex = items.firstIndex(where: { $0.id == id }),
+              let targetIndex = items.firstIndex(where: { $0.id == targetID }) else {
+            return false
+        }
+        return draggedIndex < targetIndex
+    }
 }

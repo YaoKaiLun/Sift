@@ -95,6 +95,13 @@ final class RepositoryListOrderTests: XCTestCase {
         XCTAssertEqual(RepositoryListOrder.move(id: "a", relativeTo: "a", after: true, in: existing), existing)
     }
 
+    func testIsAboveUsesCurrentListOrder() {
+        let existing = [item("a"), item("b"), item("c")]
+        XCTAssertTrue(RepositoryListOrder.isAbove(id: "a", relativeTo: "c", in: existing))
+        XCTAssertFalse(RepositoryListOrder.isAbove(id: "c", relativeTo: "a", in: existing))
+        XCTAssertFalse(RepositoryListOrder.isAbove(id: "missing", relativeTo: "a", in: existing))
+    }
+
     func testNormalizePullsPinnedAheadPreservingRelativeOrder() {
         let mixed = [
             item("a"),
