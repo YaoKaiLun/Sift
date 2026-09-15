@@ -392,6 +392,166 @@ final class RepoStoreTests: XCTestCase {
         XCTAssertFalse(store.showsBlame)
     }
 
+    func testAddRepositoryInsertsAfterPinned() async throws {
+        let first = try makeRepository()
+        let second = try makeRepository()
+        let third = try makeRepository()
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+            try? FileManager.default.removeItem(at: third)
+        }
+
+        let store = makeStore()
+        await store.addRepository(at: first)
+        await store.addRepository(at: second)
+        XCTAssertEqual(store.repositories.map(\.root), [second, first],
+                       "新仓库应插在未置顶组开头")
+
+        store.setRepositoryPinned(root: first, pinned: true)
+        XCTAssertEqual(store.repositories.map(\.root), [first, second])
+        XCTAssertEqual(store.repositories.map(\.isPinned), [true, false])
+
+        await store.addRepository(at: third)
+        XCTAssertEqual(store.repositories.map(\.root), [first, third, second],
+                       "新仓库必须在置顶之后、其余未置顶之前")
+        XCTAssertEqual(store.repositories.map(\.isPinned), [true, false, false])
+    }
+
+    func testRestoreKeepsBookmarkOrderAndPins() async throws {
+        let first = try makeRepository()
+        let second = try makeRepository()
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        let stateURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("sift-state-\(UUID().uuidString)/state.json")
+        let store = RepoStore(
+            stateStore: PersistedStateStore(fileURL: stateURL),
+            keychain: MemoryKeychain())
+        await store.addRepository(at: first)
+        await store.addRepository(at: second)
+        store.setRepositoryPinned(root: first, pinned: true)
+        XCTAssertEqual(store.repositories.map(\.root), [first, second])
+
+        let restored = RepoStore(
+            stateStore: PersistedStateStore(fileURL: stateURL),
+            keychain: MemoryKeychain())
+        await restored.restore()
+        XCTAssertEqual(restored.repositories.map(\.root), [first, second],
+                       "恢复必须按书签顺序 append，不能把新增插入逻辑套在书签上")
+        XCTAssertEqual(restored.repositories.map(\.isPinned), [true, false])
+    }
+
+    func testRefreshPreservesPinAndOrder() async throws {
+        let first = try makeRepository()
+        let second = try makeRepository()
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        let store = makeStore()
+        await store.addRepository(at: first)
+        await store.addRepository(at: second)
+        store.setRepositoryPinned(root: first, pinned: true)
+        await store.refreshFileList()
+        XCTAssertEqual(store.repositories.map(\.root), [first, second])
+        XCTAssertTrue(store.repositories[0].isPinned)
+        XCTAssertFalse(store.repositories[1].isPinned)
+    }
+
+    func testMoveRepositoryOntoPinnedRowPinsIt() async throws {
+        let first = try makeRepository()
+        let second = try makeRepository()
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        let store = makeStore()
+        await store.addRepository(at: first)
+        await store.addRepository(at: second)
+        store.setRepositoryPinned(root: first, pinned: true)
+        store.moveRepository(id: second.path, relativeTo: first.path, after: true)
+        XCTAssertEqual(store.repositories.map(\.root), [first, second])
+        XCTAssertTrue(store.repositories.allSatisfy(\.isPinned))
+    }
+
+    func testDiscardWorktreeRestoresTrackedFile() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("a\nb\n", to: "a.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("a\nCHANGED\n", to: "a.txt", in: url)
+
+        let store = makeStore()
+        await store.addRepository(at: url)
+        let file = try XCTUnwrap(store.fileStatuses.first { $0.path == "a.txt" })
+        await store.discardWorktree(files: [file])
+
+        XCTAssertTrue(store.fileStatuses.isEmpty)
+        XCTAssertEqual(
+            try String(contentsOf: url.appendingPathComponent("a.txt"), encoding: .utf8),
+            "a\nb\n")
+    }
+
+    func testDiscardWorktreeIgnoresUntracked() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("tracked\n", to: "tracked.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("new\n", to: "new.txt", in: url)
+
+        let store = makeStore()
+        await store.addRepository(at: url)
+        let file = try XCTUnwrap(store.fileStatuses.first { $0.path == "new.txt" })
+        await store.discardWorktree(files: [file])
+
+        XCTAssertTrue(store.fileStatuses.contains { $0.path == "new.txt" })
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: url.appendingPathComponent("new.txt").path))
+    }
+
+    func testOpenFileInDefaultAppUsesWorktreeURL() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("hello\n", to: "a.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("hello\nchanged\n", to: "a.txt", in: url)
+
+        var opened: [URL] = []
+        let store = makeStore()
+        store.fileOpener = { opened.append($0); return true }
+        await store.addRepository(at: url)
+        let file = try XCTUnwrap(store.fileStatuses.first { $0.path == "a.txt" })
+        store.openFileInDefaultApp(file)
+
+        XCTAssertEqual(opened.map(\.standardizedFileURL),
+                       [url.appendingPathComponent("a.txt").standardizedFileURL])
+    }
+
+    func testOpenFileInDefaultAppSkipsMissingPath() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("hello\n", to: "a.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+
+        var opened: [URL] = []
+        let store = makeStore()
+        store.fileOpener = { opened.append($0); return true }
+        await store.addRepository(at: url)
+        store.openFileInDefaultApp(FileStatus(
+            path: "missing.txt", originalPath: nil,
+            indexStatus: .modified, worktreeStatus: .modified))
+
+        XCTAssertTrue(opened.isEmpty)
+        XCTAssertNotNil(store.errorMessage)
+    }
+
     func testRestoringContinuousDiffTurnsOffPersistedBlame() throws {
         let stateURL = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("sift-state-\(UUID().uuidString)/state.json")

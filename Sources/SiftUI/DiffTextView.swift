@@ -3,6 +3,10 @@ import AppKit
 import GitKit
 import SiftLocalization
 
+public extension Notification.Name {
+    static let siftFindInDiff = Notification.Name("app.sift.findInDiff")
+}
+
 /// hunk 头上常显的暂存 / 取消暂存 / 丢弃。未跟踪、二进制、空、折叠不传。
 /// 写操作由 store.mutate 忽略重入，按钮本身不因 isMutating 变灰，避免整排闪一次。
 struct HunkActions {
@@ -121,6 +125,7 @@ struct DiffTextView: NSViewRepresentable {
         private var isLayingOutHost = false
         private var lastInstalledHunkIDs: [String] = []
         private var lastReportedCharRange = NSRange(location: NSNotFound, length: 0)
+        private var observesFind = false
 
         var blameHitRects: [NSRect] { blameHits.map(\.rect) }
 
@@ -228,11 +233,31 @@ struct DiffTextView: NSViewRepresentable {
                     self?.reportVisibleRange()
                 }
             }
+            observeFind()
+        }
+
+        private func observeFind() {
+            guard !observesFind else { return }
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(showFindBar),
+                name: .siftFindInDiff,
+                object: nil)
+            observesFind = true
+        }
+
+        @objc func showFindBar() {
+            guard let textView else { return }
+            textView.window?.makeFirstResponder(textView)
+            let item = NSMenuItem()
+            item.tag = NSTextFinder.Action.showFindInterface.rawValue
+            textView.performTextFinderAction(item)
         }
 
         private func rebuildHierarchy(split: Bool) {
             cancelBlameDetailTask()
             NotificationCenter.default.removeObserver(self)
+            observesFind = false
             container?.subviews.forEach { $0.removeFromSuperview() }
             overlay = nil
             rightExplainOverlay = nil
@@ -311,6 +336,8 @@ struct DiffTextView: NSViewRepresentable {
             textView.textContainerInset = NSSize(width: Theme.horizontalPadding, height: 0)
             textView.isAutomaticQuoteSubstitutionEnabled = false
             textView.isAutomaticSpellingCorrectionEnabled = false
+            textView.usesFindBar = true
+            textView.isIncrementalSearchingEnabled = true
             textView.delegate = self
             // 不换行：宽度设为无限，靠横向滚动。
             textView.textContainer?.widthTracksTextView = false

@@ -15,6 +15,7 @@ struct SourceSidebar: View {
     @State private var collapsedRoots: Set<URL> = []
     @State private var hoveredRow: String?
     @State private var expandedCommitWorktrees: Set<URL> = []
+    @State private var dropTarget: URL?
 
     var body: some View {
         @Bindable var store = store
@@ -92,7 +93,7 @@ struct SourceSidebar: View {
     }
 
     private func repositoryRow(_ repository: RepositoryEntry, isFirst: Bool) -> some View {
-        let id = "repo:\(repository.root.path)"
+        let id = repository.sidebarRowID
         let collapsed = collapsedRoots.contains(repository.root)
         let hovering = hoveredRow == id
         return HStack(spacing: Theme.rowSpacing) {
@@ -113,14 +114,45 @@ struct SourceSidebar: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 0)
+            if repository.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .rowSurface(isSelected: false, isHovered: hoveredRow == id,
+        .rowSurface(isSelected: dropTarget == repository.root,
+                    isHovered: hoveredRow == id || dropTarget == repository.root,
                     height: Theme.sidebarRowHeight)
         .pointerCursor()
         .padding(.top, isFirst ? 4 : Theme.sidebarGroupGap)
         .onHover { hoveredRow = $0 ? id : nil }
         .onTapGesture { toggleExpanded(repository.root) }
+        .draggable(repository.root.path) {
+            Text(repository.name)
+                .font(Theme.repositoryFont)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+        }
+        .dropDestination(for: String.self, action: { items, location in
+            guard let dragged = items.first else { return false }
+            let after = location.y > Theme.sidebarRowHeight / 2
+            store.moveRepository(id: dragged, relativeTo: repository.root.path, after: after)
+            return true
+        }, isTargeted: Binding(
+            get: { dropTarget == repository.root },
+            set: { dropTarget = $0 ? repository.root : nil }
+        ))
         .contextMenu {
+            if repository.isPinned {
+                Button(L10n.unpinRepository) {
+                    store.setRepositoryPinned(root: repository.root, pinned: false)
+                }
+            } else {
+                Button(L10n.pinRepository) {
+                    store.setRepositoryPinned(root: repository.root, pinned: true)
+                }
+            }
+            Divider()
             Button(L10n.removeRepository, role: .destructive) {
                 store.removeRepository(root: repository.root)
             }
@@ -128,7 +160,7 @@ struct SourceSidebar: View {
     }
 
     private func worktreeRow(_ worktree: Worktree) -> some View {
-        let id = "wt:\(worktree.path.path)"
+        let id = worktree.sidebarRowID
         let isCurrent = store.selectedWorktree?.path == worktree.path
         let selected = isCurrent && store.selectedCommit == nil
         let showsUnpushed = isCurrent && !store.unpushedCommits.isEmpty

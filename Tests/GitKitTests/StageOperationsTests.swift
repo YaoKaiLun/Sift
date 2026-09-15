@@ -217,6 +217,54 @@ final class StageOperationsTests: XCTestCase {
         XCTAssertFalse(unstaged.hunks.flatMap(\.lines).contains(where: { $0.text == "SECOND" }))
     }
 
+    func testDiscardWorktreeRestoresModifiedFile() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write("a\nb\nc\n", to: "a.txt")
+        try fixture.commit("initial")
+        try fixture.write("a\nB\nc\n", to: "a.txt")
+
+        let repo = GitRepository(root: fixture.url)
+        try await repo.discardWorktree(paths: ["a.txt"])
+
+        let contents = try String(contentsOf: fixture.url.appendingPathComponent("a.txt"), encoding: .utf8)
+        XCTAssertEqual(contents, "a\nb\nc\n")
+        let status = try await repo.status()
+        XCTAssertTrue(status.isEmpty, "放弃工作区修改后应变干净，实际是 \(status)")
+    }
+
+    func testDiscardWorktreeKeepsStagedChanges() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write("a\n", to: "a.txt")
+        try fixture.commit("initial")
+        try fixture.write("staged\n", to: "a.txt")
+        try fixture.git("add", "a.txt")
+        try fixture.write("unstaged\n", to: "a.txt")
+
+        let repo = GitRepository(root: fixture.url)
+        try await repo.discardWorktree(paths: ["a.txt"])
+
+        let contents = try String(contentsOf: fixture.url.appendingPathComponent("a.txt"), encoding: .utf8)
+        XCTAssertEqual(contents, "staged\n")
+        let status = try await repo.status()
+        let file = try XCTUnwrap(status.first)
+        XCTAssertTrue(file.hasStagedChanges)
+        XCTAssertFalse(file.hasUnstagedChanges)
+    }
+
+    func testDiscardWorktreeRestoresDeletedFile() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write("keep\n", to: "a.txt")
+        try fixture.commit("initial")
+        try FileManager.default.removeItem(at: fixture.url.appendingPathComponent("a.txt"))
+
+        let repo = GitRepository(root: fixture.url)
+        try await repo.discardWorktree(paths: ["a.txt"])
+
+        XCTAssertEqual(
+            try String(contentsOf: fixture.url.appendingPathComponent("a.txt"), encoding: .utf8),
+            "keep\n")
+    }
+
     func testApplyBadPatchThrows() async throws {
         let fixture = try FixtureRepo()
         try fixture.write("a\n", to: "a.txt")

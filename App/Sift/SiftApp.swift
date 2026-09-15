@@ -87,6 +87,12 @@ struct SiftApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
+            CommandGroup(replacing: .textFinding) {
+                Button(L10n.findEllipsis) {
+                    NotificationCenter.default.post(name: .siftFindInDiff, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+            }
         }
     }
 }

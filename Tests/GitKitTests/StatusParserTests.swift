@@ -31,6 +31,7 @@ final class StatusParserTests: XCTestCase {
         XCTAssertEqual(result[0].worktreeStatus, .modified)
         XCTAssertTrue(result[0].hasUnstagedChanges)
         XCTAssertTrue(result[0].hasWorkingTreeChanges)
+        XCTAssertTrue(result[0].canDiscardWorktree)
         XCTAssertFalse(result[0].hasStagedChanges)
     }
 
@@ -61,6 +62,7 @@ final class StatusParserTests: XCTestCase {
         XCTAssertEqual(result[0].path, "new.txt")
         XCTAssertTrue(result[0].isUntracked)
         XCTAssertFalse(result[0].hasUnstagedChanges)
+        XCTAssertFalse(result[0].canDiscardWorktree)
         XCTAssertTrue(result[0].hasWorkingTreeChanges)
     }
 

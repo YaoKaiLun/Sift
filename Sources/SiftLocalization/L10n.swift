@@ -38,6 +38,8 @@ public enum L10n {
     public static var noRepositories: String { t("还没有仓库", "No Repositories") }
     public static var noRepositoriesHint: String { t("点右上角的 + 添加", "Click + in the top right to add one") }
     public static var removeRepository: String { t("移除此仓库", "Remove Repository") }
+    public static var pinRepository: String { t("置顶仓库", "Pin Repository") }
+    public static var unpinRepository: String { t("取消置顶", "Unpin Repository") }
     public static var branch: String { t("分支", "Branch") }
     public static var appearance: String { t("外观", "Appearance") }
     public static var followSystem: String { t("跟随系统", "System") }
@@ -79,6 +81,12 @@ public enum L10n {
             : t("删除 \(count) 个文件", "Delete \(count) Files")
     }
 
+    public static func discardWorktreeChanges(count: Int) -> String {
+        count == 1
+            ? t("放弃修改", "Discard Changes")
+            : t("放弃 \(count) 个文件的修改", "Discard Changes in \(count) Files")
+    }
+
     // MARK: - Diff
 
     public static var selectFile: String { t("选择一个文件", "Select a File") }
@@ -92,6 +100,8 @@ public enum L10n {
     public static var blameUnavailableImage: String { t("图片预览不可用", "Unavailable for Image Preview") }
     public static var hideBlame: String { t("隐藏 blame 侧槽", "Hide Blame Gutter") }
     public static var showBlame: String { t("显示 blame 侧槽", "Show Blame Gutter") }
+    public static var find: String { t("查找", "Find") }
+    public static var findEllipsis: String { t("查找…", "Find…") }
     public static var viewAnyway: String { t("仍要查看", "View Anyway") }
     public static var stageHunk: String { t("暂存区块", "Stage Hunk") }
     public static var unstageHunk: String { t("取消暂存", "Unstage") }
@@ -211,6 +221,10 @@ public enum L10n {
 
     public static func cannotDeleteTracked(_ path: String) -> String {
         t("无法删除已跟踪文件：\(path)", "Can't delete a tracked file: \(path)")
+    }
+
+    public static func cannotOpenFile(_ path: String) -> String {
+        t("无法打开文件：\(path)", "Couldn't open file: \(path)")
     }
 
     public static func cannotCompleteOperation(_ detail: String) -> String {

@@ -11,6 +11,8 @@ public struct PersistedState: Codable, Sendable, Equatable {
     /// security-scoped 书签。沙盒环境下重启后仍能访问用户选过的目录，
     /// 存路径字符串是不够的。
     public var repositoryBookmarks: [Data]
+    /// 置顶仓库的根路径，顺序与 `repositoryBookmarks` 中置顶段一致。
+    public var pinnedRepositoryPaths: [String]
     public var selectedWorktreePath: String?
     public var usesTreeView: Bool
     public var usesSplitDiff: Bool
@@ -26,6 +28,7 @@ public struct PersistedState: Codable, Sendable, Equatable {
     public var fileFilterPatterns: [String]
 
     public init(repositoryBookmarks: [Data] = [],
+                pinnedRepositoryPaths: [String] = [],
                 selectedWorktreePath: String? = nil,
                 usesTreeView: Bool = false,
                 usesSplitDiff: Bool = false,
@@ -39,6 +42,7 @@ public struct PersistedState: Codable, Sendable, Equatable {
                 hidesFilteredFiles: Bool = false,
                 fileFilterPatterns: [String] = FileFilter.defaultPatterns) {
         self.repositoryBookmarks = repositoryBookmarks
+        self.pinnedRepositoryPaths = pinnedRepositoryPaths
         self.selectedWorktreePath = selectedWorktreePath
         self.usesTreeView = usesTreeView
         self.usesSplitDiff = usesSplitDiff
@@ -58,6 +62,7 @@ public struct PersistedState: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         repositoryBookmarks = try container.decodeIfPresent([Data].self, forKey: .repositoryBookmarks) ?? []
+        pinnedRepositoryPaths = try container.decodeIfPresent([String].self, forKey: .pinnedRepositoryPaths) ?? []
         selectedWorktreePath = try container.decodeIfPresent(String.self, forKey: .selectedWorktreePath)
         usesTreeView = try container.decodeIfPresent(Bool.self, forKey: .usesTreeView) ?? false
         usesSplitDiff = try container.decodeIfPresent(Bool.self, forKey: .usesSplitDiff) ?? false
