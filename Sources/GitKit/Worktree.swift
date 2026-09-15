@@ -14,6 +14,10 @@ public struct Worktree: Sendable, Equatable, Identifiable, Hashable {
 
     public var id: URL { path }
 
+    /// 侧栏 `LazyVStack` 里的行身份。必须和仓库行错开：主工作树的
+    /// `path` 等于仓库 `root`，共用 URL 当 id 时当前分支会渲染成空行。
+    public var sidebarRowID: String { "wt:\(path.path)" }
+
     public init(path: URL, head: String?, branch: String?,
                 isBare: Bool, isDetached: Bool, isLocked: Bool, isMain: Bool) {
         self.path = path

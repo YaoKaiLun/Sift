@@ -105,6 +105,7 @@ public enum BlobSource: Sendable, Equatable {
     case worktree
     case index
     case head
+    case revision(String)
 }
 
 public enum BlobRead: Sendable, Equatable {

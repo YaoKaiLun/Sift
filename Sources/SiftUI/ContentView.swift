@@ -4,8 +4,10 @@ import RepoStore
 
 public struct ContentView: View {
     @Environment(RepoStore.self) private var store
+    @Environment(UpdateController.self) private var updates
     @State private var showsSidebar = true
     @State private var isFullScreen = false
+    @State private var activeSplit: SplitOverlayLayout.Divider?
 
     public init() {}
 
@@ -17,15 +19,40 @@ public struct ContentView: View {
             if showsSidebar {
                 SourceSidebar()
                     .frame(width: store.sidebarWidth)
-                SplitDivider(width: sidebarWidthBinding, range: 180...340,
-                             onDragEnded: { store.persist() })
+                    .clipped()
             }
             FileListPane(showsSidebar: $showsSidebar)
                 .frame(width: store.fileListWidth)
-            SplitDivider(width: fileListWidthBinding, range: 240...520,
-                         onDragEnded: { store.persist() })
+                .clipped()
             DiffPane()
                 .frame(maxWidth: .infinity)
+                .clipped()
+        }
+        .overlay(alignment: .leading) {
+            let hits = SplitOverlayLayout.hitMinXs(
+                showsSidebar: showsSidebar,
+                sidebarWidth: store.sidebarWidth,
+                fileListWidth: store.fileListWidth)
+            ZStack(alignment: .leading) {
+                if let x = hits.sidebar {
+                    SplitDivider(isActive: activeSplit == .sidebar)
+                        .offset(x: x)
+                }
+                SplitDivider(isActive: activeSplit == .fileList)
+                    .offset(x: hits.fileList)
+            }
+            .allowsHitTesting(false)
+        }
+        .background {
+            SplitDragMonitor(
+                showsSidebar: showsSidebar,
+                sidebarWidth: CGFloat(store.sidebarWidth),
+                fileListWidth: CGFloat(store.fileListWidth),
+                onSidebarWidth: { store.sidebarWidth = Double($0) },
+                onFileListWidth: { store.fileListWidth = Double($0) },
+                onDragEnded: { store.persist() },
+                onActiveChange: { activeSplit = $0 })
+            .frame(width: 1, height: 1)
         }
         .frame(minWidth: 860, maxWidth: .infinity,
                minHeight: 480, maxHeight: .infinity)
@@ -52,6 +79,14 @@ public struct ContentView: View {
             }
         }
         .preferredColorScheme(store.appearance.colorScheme)
+        .overlay(alignment: .bottom) {
+            if case .ready(let version, _) = updates.state {
+                UpdateBanner(version: version) {
+                    updates.restart()
+                }
+                .padding(.bottom, 16)
+            }
+        }
         .alert("出错了",
                isPresented: .constant(store.errorMessage != nil),
                presenting: store.errorMessage) { _ in
@@ -59,12 +94,15 @@ public struct ContentView: View {
         } message: { message in
             Text(message)
         }
-    }
-
-    private var sidebarWidthBinding: Binding<CGFloat> {
-        Binding(
-            get: { CGFloat(store.sidebarWidth) },
-            set: { store.sidebarWidth = Double($0) })
+        .alert("检查更新",
+               isPresented: Binding(
+                get: { updates.userMessage != nil },
+                set: { if !$0 { updates.userMessage = nil } }),
+               presenting: updates.userMessage) { _ in
+            Button("好") { updates.userMessage = nil }
+        } message: { message in
+            Text(message)
+        }
     }
 
     private var settingsOverlay: some View {
@@ -83,11 +121,6 @@ public struct ContentView: View {
         .onExitCommand { store.closeExplainSettings() }
     }
 
-    private var fileListWidthBinding: Binding<CGFloat> {
-        Binding(
-            get: { CGFloat(store.fileListWidth) },
-            set: { store.fileListWidth = Double($0) })
-    }
 }
 
 public extension AppearancePreference {

@@ -1,6 +1,7 @@
 import XCTest
 import GitKit
 import DiffEngine
+import SiftUI
 
 /// 性能是本项目的最高优先级，这些测试是它的守卫。
 /// 用显式的耗时断言而不是 XCTest 的 measure baseline，因为 baseline
@@ -99,5 +100,27 @@ final class LargeRepoPerformanceTests: XCTestCase {
         }
         XCTAssertLessThan(elapsed, .milliseconds(10),
                           "折叠判断不应读取文件内容，耗时 \(elapsed)")
+    }
+
+    /// 预算：极大的 10000 行 diff 文档构建 < 100ms。
+    /// 这是独立性能门禁，不应混入普通单元测试并受 CI 机器波动影响。
+    func testTenThousandLineDocumentBuildUnder100ms() {
+        let lines = (0..<10_000).map { index in
+            DiffLine(kind: index % 3 == 0 ? .addition : .context,
+                     oldLineNumber: index, newLineNumber: index,
+                     text: "some source code line number \(index)")
+        }
+        let hunk = Hunk(oldStart: 1, oldCount: lines.count,
+                        newStart: 1, newCount: lines.count,
+                        sectionHeading: "func example()", lines: lines)
+        let diff = FileDiff(path: "a.swift", originalPath: nil, content: .textual([hunk]))
+
+        let start = ContinuousClock.now
+        _ = DiffDocumentBuilder.build(diff)
+        let elapsed = ContinuousClock.now - start
+
+        print("PERF 10000-line document: \(elapsed)")
+        XCTAssertLessThan(elapsed, .milliseconds(100),
+                          "10000 行的文档构建耗时 \(elapsed)，预算是 100ms")
     }
 }

@@ -1,0 +1,41 @@
+import XCTest
+import UpdateKit
+@testable import SiftUI
+
+private struct FixtureReleaseFetcher: ReleaseFetching {
+    let data: Data
+    func latestReleaseData() async throws -> Data { data }
+}
+
+@MainActor
+final class UpdateControllerTests: XCTestCase {
+    private let fixture = Data("""
+    {
+      "tag_name": "v1.1",
+      "assets": [
+        {"name": "Sift-1.1.dmg", "browser_download_url": "https://github.com/YaoKaiLun/Sift/releases/download/v1.1/Sift-1.1.dmg"}
+      ]
+    }
+    """.utf8)
+
+    func testCheckHigherReleaseBecomesAvailable() async throws {
+        let controller = UpdateController(
+            current: Version("1.0")!,
+            fetching: FixtureReleaseFetcher(data: fixture))
+        await controller.check(automatic: false)
+        guard case .available(let update) = controller.state else {
+            return XCTFail("应为 available，实际是 \(controller.state)")
+        }
+        XCTAssertEqual(update.version, Version("1.1"))
+    }
+
+    func testManualCheckWhenCurrentIsLatestShowsMessage() async throws {
+        let controller = UpdateController(
+            current: Version("1.1")!,
+            fetching: FixtureReleaseFetcher(data: fixture))
+        await controller.check(automatic: false)
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertEqual(controller.userMessage, "已是最新版本（1.1）。")
+    }
+}
+

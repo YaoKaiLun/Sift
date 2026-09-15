@@ -12,12 +12,13 @@ struct FileListPane: View {
     @State private var hoveredRow: String?
     @State private var confirmsDelete = false
     @State private var filesPendingDelete: [FileStatus] = []
+    @State private var showsFilterEditor = false
 
     var body: some View {
         @Bindable var store = store
         VStack(spacing: 0) {
             PaneHeader(title: "改动",
-                       subtitle: store.selectedWorktree?.displayName,
+                       subtitle: store.selectedCommit?.shortSHA ?? store.selectedWorktree?.displayName,
                        showsDivider: true,
                        leadingInset: showsSidebar ? 0 : trafficLightInset,
                        leading: {
@@ -26,25 +27,54 @@ struct FileListPane: View {
                 }
             },
                        trailing: {
-                PlainIconToggle(selection: $store.usesTreeView,
-                                falseIcon: "list.bullet",
-                                trueIcon: "list.bullet.indent",
-                                help: "切换平铺视图与树视图")
+                HStack(spacing: 2) {
+                    PlainIconButton(systemName: "line.3.horizontal.decrease",
+                                    isSelected: store.hidesFilteredFiles,
+                                    help: store.hidesFilteredFiles ? "取消过滤" : "过滤文件") {
+                        if store.hidesFilteredFiles {
+                            store.hidesFilteredFiles = false
+                        } else {
+                            showsFilterEditor = true
+                        }
+                    }
+                    .popover(isPresented: $showsFilterEditor, arrowEdge: .bottom) {
+                        FileFilterEditor()
+                    }
+                    PlainIconToggle(selection: $store.usesTreeView,
+                                    falseIcon: "list.bullet",
+                                    trueIcon: "list.bullet.indent",
+                                    help: "切换平铺视图与树视图")
+                }
             })
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(rows) { row in
-                        view(for: row)
+                VStack(alignment: .leading, spacing: 0) {
+                    if let commit = store.selectedCommit {
+                        CommitMessageBlock(subject: commit.subject, body: commit.body)
+                    }
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(rows) { row in
+                            view(for: row)
+                        }
                     }
                 }
                 .padding(.vertical, 4)
+            }
+            .background {
+                FileListKeyMonitor(orderedIDs: orderedFileIDs) { delta, extending in
+                    Task {
+                        await store.selectAdjacentFile(
+                            delta: delta, extending: extending, orderedIDs: orderedFileIDs)
+                    }
+                }
             }
             .overlay {
                 if store.selectedWorktree == nil {
                     PaneEmptyState(title: "选择一个工作树", systemImage: "sidebar.left")
                 } else if store.fileStatuses.isEmpty && !store.isLoadingFileList {
                     PaneEmptyState(title: "没有改动", systemImage: "checkmark.circle")
+                } else if store.visibleFileStatuses.isEmpty && !store.isLoadingFileList {
+                    PaneEmptyState(title: "过滤后没有文件", systemImage: "line.3.horizontal.decrease")
                 }
             }
         }
@@ -68,14 +98,22 @@ struct FileListPane: View {
 
     private var rows: [Row] {
         var result: [Row] = []
+        if store.selectedCommit != nil {
+            append(&result, title: "改动",
+                   statuses: store.visibleFileStatuses.sorted(by: FileStatus.pathOrder),
+                   staged: false)
+            return result
+        }
         append(&result, title: "已暂存",
-               statuses: store.fileStatuses.filter(\.hasStagedChanges).sorted(by: FileStatus.pathOrder),
+               statuses: store.visibleFileStatuses.filter(\.hasStagedChanges).sorted(by: FileStatus.pathOrder),
                staged: true)
         append(&result, title: "未暂存",
-               statuses: store.fileStatuses.filter(\.hasWorkingTreeChanges).sorted(by: FileStatus.pathOrder),
+               statuses: store.visibleFileStatuses.filter(\.hasWorkingTreeChanges).sorted(by: FileStatus.pathOrder),
                staged: false)
         return result
     }
+
+    private var showsFileCheckboxes: Bool { store.selectedCommit == nil }
 
     private func append(_ rows: inout [Row], title: String, statuses: [FileStatus], staged: Bool) {
         guard !statuses.isEmpty else { return }
@@ -132,22 +170,24 @@ struct FileListPane: View {
     private func directoryRow(id: String, name: String, depth: Int, collapsed: Bool,
                               files: [FileStatus], staged: Bool) -> some View {
         HStack(spacing: Theme.rowSpacing) {
-            Toggle("", isOn: Binding(
-                get: { staged },
-                set: { _ in
-                    Task {
-                        if staged {
-                            await store.unstage(files: files)
-                        } else {
-                            await store.stage(files: files)
+            if showsFileCheckboxes {
+                Toggle("", isOn: Binding(
+                    get: { staged },
+                    set: { _ in
+                        Task {
+                            if staged {
+                                await store.unstage(files: files)
+                            } else {
+                                await store.stage(files: files)
+                            }
                         }
                     }
-                }
-            ))
-            .toggleStyle(.checkbox)
-            .labelsHidden()
-            .frame(width: Theme.checkboxColumnWidth)
-            .disabled(store.isMutating || files.isEmpty)
+                ))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .frame(width: Theme.checkboxColumnWidth)
+                .disabled(store.isMutating || files.isEmpty)
+            }
             HStack(spacing: Theme.rowSpacing) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
@@ -183,29 +223,37 @@ struct FileListPane: View {
     private func fileRow(id: String, status: FileStatus, staged: Bool,
                          depth: Int, showsDirectory: Bool) -> some View {
         let selected = store.isFileSelected(status, staged: staged)
-        let stats = staged ? store.stagedLineStats[status.path] : store.unstagedLineStats[status.path]
+        let stats: LineStats? = {
+            if store.selectedCommit != nil { return store.stagedLineStats[status.path] }
+            return staged ? store.stagedLineStats[status.path] : store.unstagedLineStats[status.path]
+        }()
+        let kind = store.selectedCommit != nil
+            ? status.indexStatus
+            : (staged ? status.indexStatus : status.worktreeStatus)
         return HStack(spacing: Theme.rowSpacing) {
-            Toggle("", isOn: Binding(
-                get: { staged },
-                set: { _ in
-                    Task {
-                        if staged {
-                            await store.unstage(file: status)
-                        } else {
-                            await store.stage(file: status)
+            if showsFileCheckboxes {
+                Toggle("", isOn: Binding(
+                    get: { staged },
+                    set: { _ in
+                        Task {
+                            if staged {
+                                await store.unstage(file: status)
+                            } else {
+                                await store.stage(file: status)
+                            }
                         }
                     }
-                }
-            ))
-            .toggleStyle(.checkbox)
-            .labelsHidden()
-            .frame(width: Theme.checkboxColumnWidth)
-            .disabled(store.isMutating)
+                ))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .frame(width: Theme.checkboxColumnWidth)
+                .disabled(store.isMutating)
+            }
             HStack(spacing: Theme.rowSpacing) {
                 if !showsDirectory {
                     Color.clear.frame(width: Theme.disclosureColumnWidth)
                 }
-                StatusBadge(kind: staged ? status.indexStatus : status.worktreeStatus)
+                StatusBadge(kind: kind)
                     .frame(width: Theme.statusColumnWidth)
                 Text(showsDirectory ? status.path : status.fileName)
                     .font(Theme.pathFont)
@@ -237,12 +285,14 @@ struct FileListPane: View {
     private var orderedFileIDs: [String] {
         rows.compactMap { row in
             guard case .file(let status, let staged, _) = row.kind else { return nil }
-            return RepoStore.fileSelectionID(path: status.path, staged: staged)
+            return RepoStore.fileSelectionID(
+                path: status.path, staged: staged, commitSHA: store.selectedCommit?.sha)
         }
     }
 
     private func handleFileClick(status: FileStatus, staged: Bool) {
-        let id = RepoStore.fileSelectionID(path: status.path, staged: staged)
+        let id = RepoStore.fileSelectionID(
+            path: status.path, staged: staged, commitSHA: store.selectedCommit?.sha)
         let flags = NSEvent.modifierFlags
         if flags.contains(.shift) {
             Task { await store.selectFileRange(orderedIDs: orderedFileIDs, to: id, file: status, staged: staged) }
@@ -255,11 +305,12 @@ struct FileListPane: View {
 
     /// 右键若点在已选集合里，就处理整组；否则只处理这一行。菜单只在目标全是未跟踪时出现。
     private func deleteTargets(for status: FileStatus, staged: Bool) -> [FileStatus] {
-        let id = RepoStore.fileSelectionID(path: status.path, staged: staged)
+        let id = RepoStore.fileSelectionID(
+            path: status.path, staged: staged, commitSHA: store.selectedCommit?.sha)
         let ids = store.selectedFileIDs.contains(id) ? store.selectedFileIDs : [id]
         let files: [FileStatus] = ids.compactMap { targetID in
-            let path = String(targetID.dropFirst(2))
-            return store.fileStatuses.first { $0.path == path }
+            guard let parts = RepoStore.parseFileSelectionID(targetID) else { return nil }
+            return store.fileStatuses.first { $0.path == parts.path }
         }
         var unique: [FileStatus] = []
         var seen = Set<String>()
@@ -267,7 +318,7 @@ struct FileListPane: View {
             unique.append(file)
         }
         unique.sort { $0.path < $1.path }
-        guard !unique.isEmpty, unique.allSatisfy(\.isUntracked) else { return [] }
+        guard showsFileCheckboxes, !unique.isEmpty, unique.allSatisfy(\.isUntracked) else { return [] }
         return unique
     }
 

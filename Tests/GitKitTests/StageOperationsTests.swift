@@ -46,6 +46,22 @@ final class StageOperationsTests: XCTestCase {
         XCTAssertFalse(stagedDiff.hunks.flatMap(\.lines).contains(where: { $0.text == "SECOND" }))
     }
 
+    func testDiscardDeletedFileRestoresWorkingTree() async throws {
+        let fixture = try FixtureRepo()
+        try fixture.write("keep\n", to: "gone.txt")
+        try fixture.commit("initial")
+        try FileManager.default.removeItem(at: fixture.url.appendingPathComponent("gone.txt"))
+
+        let repo = GitRepository(root: fixture.url)
+        let diff = try await repo.diff(path: "gone.txt", staged: false)
+        try await repo.discard(hunk: try XCTUnwrap(diff.hunks.first),
+                               path: "gone.txt", originalPath: nil, kind: .deleted)
+
+        XCTAssertEqual(
+            try String(contentsOf: fixture.url.appendingPathComponent("gone.txt"), encoding: .utf8),
+            "keep\n")
+    }
+
     func testDiscardHunkRestoresWorkingTree() async throws {
         let fixture = try FixtureRepo()
         try fixture.write("a\nb\nc\n", to: "a.txt")

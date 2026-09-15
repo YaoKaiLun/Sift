@@ -23,11 +23,12 @@ public enum PatchBuilder {
             oldHeader = "--- a/\(oldPath)"
             newHeader = "+++ b/\(path)"
         case .added:
-            gitLine = "diff --git a/\(path) b/\(path)"
+            // 必须带 new file mode，否则 apply -R 会把 /dev/null 当成相对路径。
+            gitLine = "diff --git a/\(path) b/\(path)\nnew file mode 100644"
             oldHeader = "--- /dev/null"
             newHeader = "+++ b/\(path)"
         case .deleted:
-            gitLine = "diff --git a/\(path) b/\(path)"
+            gitLine = "diff --git a/\(path) b/\(path)\ndeleted file mode 100644"
             oldHeader = "--- a/\(path)"
             newHeader = "+++ /dev/null"
         }

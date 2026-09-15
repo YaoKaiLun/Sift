@@ -1,15 +1,24 @@
 import Foundation
 import GitKit
 
+public enum DiffSide: Hashable, Sendable, Equatable {
+    case workingTree(staged: Bool)
+    case commit(sha: String)
+}
+
 public struct DiffCacheKey: Sendable, Hashable {
     public let worktreePath: URL
     public let filePath: String
-    public let staged: Bool
+    public let side: DiffSide
 
-    public init(worktreePath: URL, filePath: String, staged: Bool) {
+    public init(worktreePath: URL, filePath: String, side: DiffSide) {
         self.worktreePath = worktreePath
         self.filePath = filePath
-        self.staged = staged
+        self.side = side
+    }
+
+    public init(worktreePath: URL, filePath: String, staged: Bool) {
+        self.init(worktreePath: worktreePath, filePath: filePath, side: .workingTree(staged: staged))
     }
 }
 

@@ -65,6 +65,53 @@ public struct GitRepository: Sendable {
         return URL(fileURLWithPath: path)
     }
 
+    /// 无上游时返回 nil。领先 0 时返回空数组。
+    public func unpushedCommits() async throws -> [CommitInfo]? {
+        let up = try await runner.runAllowingFailure(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], in: root)
+        guard up.exitCode == 0 else { return nil }
+        let upstream = String(decoding: up.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let data = try await runner.run(
+            ["log", "--format=%H%x1f%s%x1f%b%x1f%an%x1f%aI%x1e", "\(upstream)..HEAD"], in: root)
+        return CommitLogParser.parse(data)
+    }
+
+    public func commitFiles(sha: String) async throws -> (
+        files: [FileStatus], lineStats: [String: LineStats]
+    ) {
+        var nameArgs = ["diff-tree", "--no-commit-id", "--name-status", "-z", "-r"]
+        var numArgs = ["diff-tree", "--no-commit-id", "--numstat", "-z", "-r"]
+        let parent = try await runner.runAllowingFailure(["rev-parse", "\(sha)^"], in: root)
+        if parent.exitCode != 0 {
+            nameArgs.append("--root")
+            numArgs.append("--root")
+        }
+        nameArgs.append(sha)
+        numArgs.append(sha)
+        async let names = runner.run(nameArgs, in: root)
+        async let nums = runner.run(numArgs, in: root)
+        return (try NameStatusParser.parse(try await names), NumstatParser.parse(try await nums))
+    }
+
+    public func diff(path: String, from parent: String?, to sha: String) async throws -> FileDiff {
+        let args: [String]
+        if let parent {
+            args = ["diff", "--no-color", "-U3", parent, sha, "--", path]
+        } else {
+            args = ["show", "--format=", "--no-color", "-U3", sha, "--", path]
+        }
+        return DiffParser.parse(try await runner.run(args, in: root), path: path)
+    }
+
+    public func commitParent(sha: String) async -> String? {
+        let output = try? await runner.runAllowingFailure(["rev-parse", "\(sha)^"], in: root)
+        guard let output, output.exitCode == 0 else { return nil }
+        let text = String(decoding: output.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
     /// 把整个文件加入暂存区。必须拿 index 锁。
     public func stage(path: String) async throws {
         try await stage(paths: [path])
@@ -129,15 +176,17 @@ public struct GitRepository: Sendable {
         try await apply(patch: patch, cached: false, reverse: true)
     }
 
-    /// HEAD 上的 blame，行号对应当前 diff 的旧侧。
-    /// 暂存/未暂存两侧都看提交前的作者；新增行、未跟踪、二进制、失败返回空。
-    public func blame(path: String, staged _: Bool) async -> [BlameLine] {
+    /// 指定修订上的 blame，行号对应当前 diff 的旧侧。
+    /// 工作区默认看 HEAD；阅读未推送 commit 时传入 parent SHA。
+    /// 新增行、未跟踪、二进制、失败返回空。
+    public func blame(path: String, staged _: Bool, revision: String? = nil) async -> [BlameLine] {
+        let spec = revision ?? "HEAD"
         let shown = try? await runner.runAllowingFailure(
-            ["show", "HEAD:\(path)"], in: root, optionalLocks: true)
+            ["show", "\(spec):\(path)"], in: root, optionalLocks: true)
         guard let shown, shown.exitCode == 0 else { return [] }
         if isBinary(shown.stdout) { return [] }
         let output = try? await runner.runAllowingFailure(
-            ["blame", "-p", "HEAD", "--", path], in: root, optionalLocks: true)
+            ["blame", "-p", spec, "--", path], in: root, optionalLocks: true)
         guard let output, output.exitCode == 0 else { return [] }
         return BlameParser.parse(output.stdout)
     }
@@ -171,6 +220,8 @@ public struct GitRepository: Sendable {
             return await gitBlob(spec: ":\(path)")
         case .head:
             return await gitBlob(spec: "HEAD:\(path)")
+        case .revision(let rev):
+            return await gitBlob(spec: "\(rev):\(path)")
         }
     }
 
