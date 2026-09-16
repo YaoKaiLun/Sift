@@ -193,8 +193,8 @@ public enum L10n {
           "A release was found, but it has no installable DMG.")
     }
 
-    public static func cannotCheckUpdates(_ detail: String) -> String {
-        t("无法检查更新：\(detail)", "Couldn't check for updates: \(detail)")
+    public static var cannotCheckUpdates: String {
+        t("无法检查更新，请稍后重试。", "Couldn't check for updates. Try again later.")
     }
 
     public static var cannotInstallUpdate: String {

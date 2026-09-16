@@ -58,7 +58,7 @@ public final class UpdateController {
         } catch {
             state = .failed(error.localizedDescription)
             if !automatic {
-                userMessage = L10n.cannotCheckUpdates(error.localizedDescription)
+                userMessage = L10n.cannotCheckUpdates
             } else {
                 state = .idle
             }

@@ -38,5 +38,20 @@ final class UpdateControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .idle)
         XCTAssertEqual(controller.userMessage, L10n.upToDate("1.1"))
     }
+
+    func testManualCheckNetworkFailureUsesLocalizedMessage() async {
+        let controller = UpdateController(
+            current: Version("1.1")!,
+            fetching: FailingReleaseFetcher(error: URLError(.badServerResponse)))
+        await controller.check(automatic: false)
+        XCTAssertEqual(controller.userMessage, L10n.cannotCheckUpdates)
+        XCTAssertFalse(controller.userMessage?.contains("NSURLErrorDomain") ?? true)
+        XCTAssertFalse(controller.userMessage?.contains("-1011") ?? true)
+    }
+}
+
+private struct FailingReleaseFetcher: ReleaseFetching {
+    let error: Error
+    func latestReleaseData() async throws -> Data { throw error }
 }
 

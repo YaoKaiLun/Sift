@@ -30,4 +30,23 @@ public struct GitHubLatestRelease: Sendable, Equatable, Decodable {
     public static func decode(_ data: Data) throws -> GitHubLatestRelease {
         try JSONDecoder().decode(GitHubLatestRelease.self, from: data)
     }
+
+    public static func tagName(fromReleasePage url: URL) -> String? {
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard let index = parts.firstIndex(of: "tag"), parts.indices.contains(index + 1) else {
+            return nil
+        }
+        let tag = parts[index + 1]
+        return tag.isEmpty ? nil : tag
+    }
+
+    public static func synthesizedData(tagName: String) -> Data {
+        let version = Version(tagName)?.description ?? tagName
+        let name = "Sift-\(version).dmg"
+        let download = "https://github.com/YaoKaiLun/Sift/releases/download/\(tagName)/\(name)"
+        let json = """
+        {"tag_name":"\(tagName)","assets":[{"name":"\(name)","browser_download_url":"\(download)"}]}
+        """
+        return Data(json.utf8)
+    }
 }
