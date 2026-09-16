@@ -14,6 +14,7 @@ final class L10nTests: XCTestCase {
         XCTAssertEqual(L10n.discardWorktreeChanges(count: 1), "放弃修改")
         XCTAssertEqual(L10n.findEllipsis, "查找…")
         XCTAssertEqual(L10n.upToDate("1.1"), "已是最新版本（1.1）。")
+        XCTAssertEqual(L10n.cannotCheckUpdates, "无法检查更新，请稍后重试。")
     }
 
     func testEnglishOverride() {
@@ -23,5 +24,6 @@ final class L10nTests: XCTestCase {
         XCTAssertEqual(L10n.discardWorktreeChanges(count: 2), "Discard Changes in 2 Files")
         XCTAssertEqual(L10n.findEllipsis, "Find…")
         XCTAssertEqual(L10n.upToDate("1.1"), "You're on the latest version (1.1).")
+        XCTAssertEqual(L10n.cannotCheckUpdates, "Couldn't check for updates. Try again later.")
     }
 }

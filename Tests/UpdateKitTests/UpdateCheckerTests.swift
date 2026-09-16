@@ -29,4 +29,14 @@ final class UpdateCheckerTests: XCTestCase {
         let result = try await UpdateChecker.check(current: Version("1.0")!, fetching: fetcher)
         XCTAssertEqual(result, .noInstallableAsset)
     }
+
+    func testSynthesizedLatestReleaseIsAvailable() async throws {
+        let fetcher = FixtureReleaseFetcher(data: GitHubLatestRelease.synthesizedData(tagName: "v1.2.0"))
+        let result = try await UpdateChecker.check(current: Version("1.0")!, fetching: fetcher)
+        guard case .available(let update) = result else {
+            return XCTFail("应为 available，实际是 \(result)")
+        }
+        XCTAssertEqual(update.version, Version("1.2.0"))
+        XCTAssertEqual(update.dmgURL.lastPathComponent, "Sift-1.2.0.dmg")
+    }
 }

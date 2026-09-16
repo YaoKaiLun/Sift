@@ -20,14 +20,25 @@ public protocol ReleaseFetching: Sendable {
 public struct GitHubReleaseFetcher: ReleaseFetching {
     private let session: URLSession
     private let url: URL
+    private let pageURL: URL
 
     public init(session: URLSession = .shared,
-                url: URL = URL(string: "https://api.github.com/repos/YaoKaiLun/Sift/releases/latest")!) {
+                url: URL = URL(string: "https://api.github.com/repos/YaoKaiLun/Sift/releases/latest")!,
+                pageURL: URL = URL(string: "https://github.com/YaoKaiLun/Sift/releases/latest")!) {
         self.session = session
         self.url = url
+        self.pageURL = pageURL
     }
 
     public func latestReleaseData() async throws -> Data {
+        do {
+            return try await fetchAPI()
+        } catch {
+            return try await fetchReleasePage()
+        }
+    }
+
+    private func fetchAPI() async throws -> Data {
         var request = URLRequest(url: url)
         request.setValue("Sift", forHTTPHeaderField: "User-Agent")
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -36,6 +47,18 @@ public struct GitHubReleaseFetcher: ReleaseFetching {
             throw URLError(.badServerResponse)
         }
         return data
+    }
+
+    /// API 限流或被拦截时，跟网页 latest 的 302 拿 tag，再按约定拼 DMG 地址。
+    private func fetchReleasePage() async throws -> Data {
+        var request = URLRequest(url: pageURL)
+        request.setValue("Sift", forHTTPHeaderField: "User-Agent")
+        let (_, response) = try await session.data(for: request)
+        guard let finalURL = response.url,
+              let tag = GitHubLatestRelease.tagName(fromReleasePage: finalURL) else {
+            throw URLError(.badServerResponse)
+        }
+        return GitHubLatestRelease.synthesizedData(tagName: tag)
     }
 }
 
