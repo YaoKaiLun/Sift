@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import GitKit
+import DiffEngine
 @testable import SiftUI
 
 final class DiffDocumentBuilderTests: XCTestCase {
@@ -255,6 +256,153 @@ final class DiffDocumentBuilderTests: XCTestCase {
         XCTAssertTrue(copied.contains("LINE_18_END"), "选区后 8 行应包含 line18")
         XCTAssertFalse(copied.contains("LINE_1_END"), "再往前第 9 行不应进入上下文")
         XCTAssertFalse(copied.contains("LINE_19_END"), "再往后第 9 行不应进入上下文")
+    }
+
+    func testCodeReferenceUsesPathAndNewLineNumber() {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 12, text: "fresh"),
+        ], oldStart: 11, newStart: 12))
+        let range = (document.text.string as NSString).range(of: "fresh")
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: document.text, range: range, fallbackPath: "a.swift")
+        XCTAssertEqual(copied, """
+        ```a.swift:12
+        +fresh
+        ```
+        """)
+    }
+
+    func testCodeReferenceSingleLineDoesNotUseRange() {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 4, newLineNumber: 4, text: "keep"),
+        ], oldStart: 4, newStart: 4))
+        let range = (document.text.string as NSString).range(of: "keep")
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: document.text, range: range, fallbackPath: "a.swift")
+        XCTAssertTrue(copied.hasPrefix("```a.swift:4\n"))
+        XCTAssertFalse(copied.contains("4-4"))
+    }
+
+    func testCodeReferenceUsesLineRangeForEmptySelection() {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 2, text: "fresh"),
+        ], oldStart: 1, newStart: 1))
+        let needle = (document.text.string as NSString).range(of: "fresh")
+        let caret = NSRange(location: needle.location, length: 0)
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: document.text, range: caret, fallbackPath: "a.swift")
+        XCTAssertTrue(copied.contains("```a.swift:2\n"))
+        XCTAssertTrue(copied.contains("+fresh"))
+    }
+
+    func testCodeReferenceDropsGutter() {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 42, newLineNumber: 43, text: "keep"),
+        ], oldStart: 42, newStart: 43))
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: document.text,
+            range: NSRange(location: 0, length: document.text.length),
+            fallbackPath: "a.swift")
+        XCTAssertFalse(copied.contains("  42"))
+        XCTAssertTrue(copied.contains(" keep") || copied.contains("keep"))
+        XCTAssertTrue(copied.contains("```a.swift:43"))
+    }
+
+    func testCodeReferenceSpansLineRange() {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .context, oldLineNumber: 10, newLineNumber: 10, text: "one"),
+            DiffLine(kind: .context, oldLineNumber: 11, newLineNumber: 11, text: "two"),
+            DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 12, text: "three"),
+        ], oldStart: 10, newStart: 10))
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: document.text,
+            range: NSRange(location: 0, length: document.text.length),
+            fallbackPath: "a.swift")
+        XCTAssertTrue(copied.hasPrefix("```a.swift:10-12\n"))
+        XCTAssertTrue(copied.contains(" one") || copied.contains("one"))
+        XCTAssertTrue(copied.contains("+three"))
+    }
+
+    func testCodeReferenceTruncatesExtraLines() {
+        var lines: [DiffLine] = []
+        for number in 1...5 {
+            lines.append(DiffLine(
+                kind: .context, oldLineNumber: number, newLineNumber: number,
+                text: "LINE_\(number)"))
+        }
+        let document = DiffDocumentBuilder.build(makeDiff(lines))
+        let ns = document.text.string as NSString
+        let start = ns.range(of: "LINE_1")
+        let end = ns.range(of: "LINE_5")
+        let range = NSRange(location: start.location, length: NSMaxRange(end) - start.location)
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: document.text,
+            range: range,
+            fallbackPath: "a.swift",
+            maxLines: 2)
+        XCTAssertTrue(copied.contains("LINE_1"))
+        XCTAssertTrue(copied.contains("LINE_2"))
+        XCTAssertFalse(copied.contains("LINE_3"))
+        XCTAssertTrue(copied.contains("… (truncated, 3 more lines)"))
+    }
+
+    func testCodeReferenceUsesOldLineNumbersOnLeftSplit() throws {
+        let document = DiffDocumentBuilder.build(makeDiff([
+            DiffLine(kind: .deletion, oldLineNumber: 8, newLineNumber: nil, text: "gone"),
+            DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 8, text: "fresh"),
+        ], oldStart: 8, newStart: 8), layout: .split)
+        let range = (document.text.string as NSString).range(of: "gone")
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: document.text, range: range, fallbackPath: "a.swift",
+            usesNewLineNumbers: false)
+        XCTAssertTrue(copied.contains("```a.swift:8\n"))
+        XCTAssertTrue(copied.contains("-gone"))
+
+        let right = try XCTUnwrap(document.splitRight)
+        let rightRange = (right.string as NSString).range(of: "fresh")
+        let rightCopied = DiffDocumentBuilder.codeReferenceString(
+            from: right, range: rightRange, fallbackPath: "a.swift",
+            usesNewLineNumbers: true)
+        XCTAssertTrue(rightCopied.contains("```a.swift:8\n"))
+        XCTAssertTrue(rightCopied.contains("+fresh"))
+    }
+
+    func testCodeReferenceSplitsFencesAcrossFiles() {
+        let first = ContinuousDiffEntry(
+            status: FileStatus(path: "a.swift", originalPath: nil,
+                               indexStatus: .modified, worktreeStatus: .unmodified),
+            staged: true, added: 1, deleted: 0)
+        let second = ContinuousDiffEntry(
+            status: FileStatus(path: "b.swift", originalPath: nil,
+                               indexStatus: .unmodified, worktreeStatus: .modified),
+            staged: false, added: 1, deleted: 0)
+        let hunkA = Hunk(oldStart: 1, oldCount: 0, newStart: 1, newCount: 1,
+                         sectionHeading: "",
+                         lines: [DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 1, text: "alpha")])
+        let hunkB = Hunk(oldStart: 2, oldCount: 0, newStart: 2, newCount: 1,
+                         sectionHeading: "",
+                         lines: [DiffLine(kind: .addition, oldLineNumber: nil, newLineNumber: 2, text: "beta")])
+        let document = DiffDocumentBuilder.buildContinuous(sections: [
+            (first, .ready(FileDiff(path: "a.swift", originalPath: nil, content: .textual([hunkA])))),
+            (second, .ready(FileDiff(path: "b.swift", originalPath: nil, content: .textual([hunkB])))),
+        ])
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: document.text,
+            range: NSRange(location: 0, length: document.text.length),
+            fallbackPath: "fallback.swift",
+            fileHeaders: document.fileHeaders)
+        XCTAssertTrue(copied.contains("```a.swift:1\n"))
+        XCTAssertTrue(copied.contains("+alpha"))
+        XCTAssertTrue(copied.contains("```b.swift:2\n"))
+        XCTAssertTrue(copied.contains("+beta"))
+        XCTAssertFalse(copied.contains("fallback.swift"))
+    }
+
+    func testCodeReferenceEmptyDocumentIsEmpty() {
+        let copied = DiffDocumentBuilder.codeReferenceString(
+            from: NSAttributedString(), range: NSRange(location: 0, length: 0),
+            fallbackPath: "a.swift")
+        XCTAssertEqual(copied, "")
     }
 
 }

@@ -34,6 +34,24 @@ public enum DiffOverlayGeometry {
         return NSRect(x: x, y: y, width: size.width, height: size.height)
     }
 
+    /// 选区操作条：优先贴在选区下方、左对齐。盖在选区右侧会挡住同一行后半段代码。
+    public static func selectionActionFrame(selection: NSRect,
+                                            size: NSSize,
+                                            in bounds: NSRect,
+                                            flipped: Bool,
+                                            padding: CGFloat = 6,
+                                            margin: CGFloat = 8) -> NSRect {
+        let maxX = bounds.maxX - size.width - margin
+        let x = min(max(margin, selection.minX), max(margin, maxX))
+        let belowY = flipped ? selection.maxY + padding : selection.minY - size.height - padding
+        let aboveY = flipped ? selection.minY - size.height - padding : selection.maxY + padding
+        let below = NSRect(x: x, y: belowY, width: size.width, height: size.height)
+        let inset = bounds.insetBy(dx: 0, dy: margin)
+        let y = inset.contains(below) ? belowY
+            : min(max(margin, aboveY), bounds.maxY - size.height - margin)
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
     /// 通栏灰条：盖住 textContainerInset 左右留白，不要只铺文字那一段。
     public static func fullBleedBar(from headerRect: NSRect, overlayBounds: NSRect) -> NSRect {
         NSRect(x: overlayBounds.minX, y: headerRect.minY,

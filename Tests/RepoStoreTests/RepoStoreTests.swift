@@ -541,6 +541,56 @@ final class RepoStoreTests: XCTestCase {
                        [url.appendingPathComponent("a.txt").standardizedFileURL])
     }
 
+    func testRevealInFinderUsesWorktreeURLs() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("hello\n", to: "a.txt", in: url)
+        try write("other\n", to: "b.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("hello\nchanged\n", to: "a.txt", in: url)
+        try write("other\nchanged\n", to: "b.txt", in: url)
+
+        var revealed: [URL] = []
+        let store = makeStore()
+        store.fileRevealer = { revealed.append(contentsOf: $0) }
+        await store.addRepository(at: url)
+        let a = try XCTUnwrap(store.fileStatuses.first { $0.path == "a.txt" })
+        let b = try XCTUnwrap(store.fileStatuses.first { $0.path == "b.txt" })
+        store.revealInFinder([a, b])
+
+        XCTAssertEqual(Set(revealed.map(\.standardizedFileURL)),
+                       Set([url.appendingPathComponent("a.txt").standardizedFileURL,
+                            url.appendingPathComponent("b.txt").standardizedFileURL]))
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testRevealInFinderSkipsMissingAndErrorsWhenNoneExist() async throws {
+        let url = try makeRepository()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try write("hello\n", to: "a.txt", in: url)
+        try runGit(["add", "-A"], in: url)
+        try runGit(["commit", "-m", "initial"], in: url)
+        try write("hello\nchanged\n", to: "a.txt", in: url)
+
+        var revealed: [URL] = []
+        let store = makeStore()
+        store.fileRevealer = { revealed.append(contentsOf: $0) }
+        await store.addRepository(at: url)
+        let existing = try XCTUnwrap(store.fileStatuses.first { $0.path == "a.txt" })
+        let missing = FileStatus(
+            path: "gone.txt", originalPath: nil,
+            indexStatus: .deleted, worktreeStatus: .deleted)
+        store.revealInFinder([existing, missing])
+        XCTAssertEqual(revealed.map(\.lastPathComponent), ["a.txt"])
+        XCTAssertNil(store.errorMessage)
+
+        revealed.removeAll()
+        store.revealInFinder([missing])
+        XCTAssertTrue(revealed.isEmpty)
+        XCTAssertNotNil(store.errorMessage)
+    }
+
     func testOpenFileInDefaultAppSkipsMissingPath() async throws {
         let url = try makeRepository()
         defer { try? FileManager.default.removeItem(at: url) }

@@ -228,6 +228,8 @@ public final class RepoStore {
     var explainProviderOverride: (any ExplainProvider)?
     /// 测试可注入；生产路径走系统默认应用。
     var fileOpener: (URL) -> Bool = { NSWorkspace.shared.open($0) }
+    /// 测试可注入；生产路径在 Finder 中选中文件。
+    var fileRevealer: ([URL]) -> Void = { NSWorkspace.shared.activateFileViewerSelecting($0) }
     /// 解释流世代。过期的完成/取消回写必须丢掉，不能动当前句柄。
     private var explainGeneration: UInt64 = 0
     private var lastExplainSelectedText = ""
@@ -874,6 +876,25 @@ public final class RepoStore {
         if !fileOpener(url) {
             errorMessage = L10n.cannotOpenFile(file.path)
         }
+    }
+
+    public func revealInFinder(_ files: [FileStatus]) {
+        guard let worktree = selectedWorktree, !files.isEmpty else { return }
+        var urls: [URL] = []
+        var firstMissing: String?
+        for file in files {
+            let url = worktree.path.appendingPathComponent(file.path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                urls.append(url)
+            } else if firstMissing == nil {
+                firstMissing = file.path
+            }
+        }
+        guard !urls.isEmpty else {
+            errorMessage = L10n.cannotOpenFile(firstMissing ?? files[0].path)
+            return
+        }
+        fileRevealer(urls)
     }
 
     public func stage(hunk: Hunk, file: FileStatus? = nil, stagedSide: Bool? = nil) async {

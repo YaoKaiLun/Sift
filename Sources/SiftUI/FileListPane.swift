@@ -208,11 +208,13 @@ struct FileListPane: View {
             }
             .padding(.leading, CGFloat(depth) * Theme.indentWidth)
             .contentShape(Rectangle())
-            .onTapGesture {
-                if collapsed {
-                    collapsedDirectories.remove(id)
-                } else {
-                    collapsedDirectories.insert(id)
+            .overlay {
+                FirstMouseClickCatcher { _ in
+                    if collapsed {
+                        collapsedDirectories.remove(id)
+                    } else {
+                        collapsedDirectories.insert(id)
+                    }
                 }
             }
         }
@@ -267,10 +269,12 @@ struct FileListPane: View {
             }
             .padding(.leading, showsDirectory ? 0 : CGFloat(depth) * Theme.indentWidth)
             .contentShape(Rectangle())
-            .onTapGesture {
-                handleFileClick(status: status, staged: staged)
-                if NSApp.currentEvent?.clickCount == 2 {
-                    store.openFileInDefaultApp(status)
+            .overlay {
+                FirstMouseClickCatcher { count in
+                    handleFileClick(status: status, staged: staged)
+                    if count >= 2 {
+                        store.openFileInDefaultApp(status)
+                    }
                 }
             }
         }
@@ -278,9 +282,13 @@ struct FileListPane: View {
         .pointerCursor()
         .onHover { hoveredRow = $0 ? id : nil }
         .fileRowContextMenu(
+            revealTargets: selectedFiles(for: status, staged: staged),
             discardTargets: discardTargets(for: status, staged: staged),
             deleteTargets: deleteTargets(for: status, staged: staged),
             isMutating: store.isMutating,
+            onReveal: { files in
+                store.revealInFinder(files)
+            },
             onDiscard: { files in
                 Task { await store.discardWorktree(files: files) }
             },
@@ -353,29 +361,31 @@ struct FileListPane: View {
 }
 
 private extension View {
-    @ViewBuilder
-    func fileRowContextMenu(discardTargets: [FileStatus],
+    func fileRowContextMenu(revealTargets: [FileStatus],
+                            discardTargets: [FileStatus],
                             deleteTargets: [FileStatus],
                             isMutating: Bool,
+                            onReveal: @escaping ([FileStatus]) -> Void,
                             onDiscard: @escaping ([FileStatus]) -> Void,
                             onDelete: @escaping ([FileStatus]) -> Void) -> some View {
-        if discardTargets.isEmpty && deleteTargets.isEmpty {
-            self
-        } else {
-            self.contextMenu {
-                if !discardTargets.isEmpty {
-                    Button(L10n.discardWorktreeChanges(count: discardTargets.count)) {
-                        onDiscard(discardTargets)
-                    }
-                    .disabled(isMutating)
+        self.contextMenu {
+            if !revealTargets.isEmpty {
+                Button(L10n.showInFinder) {
+                    onReveal(revealTargets)
                 }
-                if !deleteTargets.isEmpty {
-                    Button(L10n.deleteFiles(count: deleteTargets.count),
-                           role: .destructive) {
-                        onDelete(deleteTargets)
-                    }
-                    .disabled(isMutating)
+            }
+            if !discardTargets.isEmpty {
+                Button(L10n.discardWorktreeChanges(count: discardTargets.count)) {
+                    onDiscard(discardTargets)
                 }
+                .disabled(isMutating)
+            }
+            if !deleteTargets.isEmpty {
+                Button(L10n.deleteFiles(count: deleteTargets.count),
+                       role: .destructive) {
+                    onDelete(deleteTargets)
+                }
+                .disabled(isMutating)
             }
         }
     }

@@ -172,6 +172,190 @@ public enum DiffDocumentBuilder {
         return NSRange(location: start, length: end - start)
     }
 
+    /// 复制给其他 AI 用的代码引用：路径 + 行号 + 去 gutter 的正文。
+    /// 空选区扩成当前行；跨文件拆成多个围栏；超出 `maxLines` / `maxCharacters` 时裁剪开头。
+    public static func codeReferenceString(
+        from text: NSAttributedString,
+        range: NSRange,
+        fallbackPath: String,
+        fileHeaders: [DiffFileHeader] = [],
+        usesNewLineNumbers: Bool = true,
+        maxLines: Int = 80,
+        maxCharacters: Int = 8000
+    ) -> String {
+        guard text.length > 0 else { return "" }
+        let expanded = surroundingRange(of: range, in: text.string, extraLines: 0)
+        guard expanded.length > 0 else { return "" }
+
+        let snippets = fileSlices(in: expanded, fileHeaders: fileHeaders, fallbackPath: fallbackPath)
+            .compactMap { slice -> CodeReferenceSnippet? in
+                let lines = copiedReferenceLines(
+                    from: text, range: slice.range, usesNewLineNumbers: usesNewLineNumbers)
+                guard !lines.isEmpty else { return nil }
+                return CodeReferenceSnippet(
+                    path: slice.path,
+                    start: lines.compactMap(\.number).first,
+                    end: lines.compactMap(\.number).last,
+                    lines: lines.map(\.text))
+            }
+        return formatCodeReference(snippets, maxLines: maxLines, maxCharacters: maxCharacters)
+    }
+
+    private struct FileSlice {
+        var path: String
+        var range: NSRange
+    }
+
+    private struct CopiedReferenceLine {
+        var number: Int?
+        var text: String
+    }
+
+    private struct CodeReferenceSnippet {
+        var path: String
+        var start: Int?
+        var end: Int?
+        var lines: [String]
+    }
+
+    private static func fileSlices(in range: NSRange,
+                                   fileHeaders: [DiffFileHeader],
+                                   fallbackPath: String) -> [FileSlice] {
+        guard !fileHeaders.isEmpty else {
+            return [FileSlice(path: fallbackPath, range: range)]
+        }
+        var slices: [FileSlice] = []
+        var location = range.location
+        let end = NSMaxRange(range)
+        while location < end {
+            let path = filePath(atCharacter: location, in: fileHeaders) ?? fallbackPath
+            let nextHeader = fileHeaders.first { $0.range.location > location }?.range.location ?? end
+            let sliceEnd = min(end, nextHeader)
+            let sliceRange = NSRange(location: location, length: sliceEnd - location)
+            if sliceRange.length > 0 {
+                if slices.last?.path == path {
+                    let last = slices.count - 1
+                    let start = slices[last].range.location
+                    slices[last].range = NSRange(location: start, length: sliceEnd - start)
+                } else {
+                    slices.append(FileSlice(path: path, range: sliceRange))
+                }
+            }
+            location = sliceEnd
+        }
+        return slices
+    }
+
+    private static func filePath(atCharacter location: Int, in fileHeaders: [DiffFileHeader]) -> String? {
+        var current: String?
+        for header in fileHeaders where header.range.location <= location {
+            if !header.path.isEmpty {
+                current = header.path
+            }
+        }
+        return current
+    }
+
+    private static func copiedReferenceLines(
+        from text: NSAttributedString,
+        range: NSRange,
+        usesNewLineNumbers: Bool
+    ) -> [CopiedReferenceLine] {
+        guard range.length > 0,
+              range.location >= 0,
+              NSMaxRange(range) <= text.length else { return [] }
+
+        let ns = text.string as NSString
+        var lines: [CopiedReferenceLine] = []
+        var location = range.location
+        let end = NSMaxRange(range)
+
+        while location < end {
+            let lineRange = ns.lineRange(for: NSRange(location: location, length: 0))
+            let slice = NSIntersectionRange(lineRange, range)
+            if slice.length == 0 { break }
+
+            var keepsLine = false
+            var lineText = ""
+            var gutter = ""
+            text.enumerateAttributes(in: lineRange) { attrs, run, _ in
+                let role = attrs[.siftRole] as? String
+                if role == "gutter" {
+                    gutter += ns.substring(with: run)
+                    return
+                }
+                let inSlice = NSIntersectionRange(run, slice)
+                guard inSlice.length > 0 else { return }
+                if role == "code" || role == "header" { keepsLine = true }
+                lineText += ns.substring(with: inSlice)
+            }
+            if keepsLine {
+                if lineText.hasSuffix("\n") {
+                    lineText = String(lineText.dropLast())
+                }
+                lines.append(CopiedReferenceLine(
+                    number: lineNumber(fromGutter: gutter, usesNew: usesNewLineNumbers),
+                    text: lineText))
+            }
+            location = NSMaxRange(slice)
+        }
+        return lines
+    }
+
+    private static func lineNumber(fromGutter gutter: String, usesNew: Bool) -> Int? {
+        let numbers = gutterIntegers(gutter)
+        return usesNew ? numbers.last : numbers.first
+    }
+
+    private static func formatCodeReference(_ snippets: [CodeReferenceSnippet],
+                                            maxLines: Int,
+                                            maxCharacters: Int) -> String {
+        var remainingLines = max(0, maxLines)
+        var remainingChars = max(0, maxCharacters)
+        var omitted = 0
+        var fences: [String] = []
+
+        for snippet in snippets {
+            if remainingLines <= 0 || remainingChars <= 0 {
+                omitted += snippet.lines.count
+                continue
+            }
+
+            var taken: [String] = []
+            for (index, line) in snippet.lines.enumerated() {
+                let extra = line.count + (taken.isEmpty ? 0 : 1)
+                if !taken.isEmpty && (remainingLines <= 0 || extra > remainingChars) {
+                    omitted += snippet.lines.count - index
+                    remainingLines = 0
+                    remainingChars = 0
+                    break
+                }
+                taken.append(line)
+                remainingLines -= 1
+                remainingChars -= extra
+            }
+
+            let header = fenceHeader(path: snippet.path, start: snippet.start, end: snippet.end)
+            let body = taken.joined(separator: "\n")
+            fences.append("```\(header)\n\(body)\n```")
+        }
+
+        guard !fences.isEmpty else { return "" }
+        var result = fences.joined(separator: "\n\n")
+        if omitted > 0 {
+            result += "\n… (truncated, \(omitted) more lines)"
+        }
+        return result
+    }
+
+    private static func fenceHeader(path: String, start: Int?, end: Int?) -> String {
+        guard let start else { return path }
+        if let end, end != start {
+            return "\(path):\(start)-\(end)"
+        }
+        return "\(path):\(start)"
+    }
+
     public static func build(_ diff: FileDiff,
                              layout: DiffLayout = .unified,
                              hunkIDPrefix: String = "") -> DiffDocument {

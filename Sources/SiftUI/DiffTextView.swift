@@ -5,6 +5,7 @@ import SiftLocalization
 
 public extension Notification.Name {
     static let siftFindInDiff = Notification.Name("app.sift.findInDiff")
+    static let siftCopyCodeReference = Notification.Name("app.sift.copyCodeReference")
 }
 
 /// hunk 头上常显的暂存 / 取消暂存 / 丢弃。未跟踪、二进制、空、折叠不传。
@@ -31,6 +32,7 @@ struct DiffTextView: NSViewRepresentable {
     var hunkActions: HunkActions?
     var onSelectionChange: ((NSRange) -> Void)?
     var onExplain: ((String, String) -> Void)?
+    var codeReferencePath: String = ""
     var onVisibleRangeChange: ((NSRange) -> Void)?
     var preserveVisibleRect: Bool = false
     var revealRange: NSRange? = nil
@@ -54,6 +56,7 @@ struct DiffTextView: NSViewRepresentable {
                                     hunkActions: hunkActions,
                                     onSelectionChange: onSelectionChange,
                                     onExplain: onExplain,
+                                    codeReferencePath: codeReferencePath,
                                     onVisibleRangeChange: onVisibleRangeChange,
                                     preserveVisibleRect: preserveVisibleRect,
                                     revealRange: revealRange,
@@ -74,6 +77,7 @@ struct DiffTextView: NSViewRepresentable {
                                     hunkActions: hunkActions,
                                     onSelectionChange: onSelectionChange,
                                     onExplain: onExplain,
+                                    codeReferencePath: codeReferencePath,
                                     onVisibleRangeChange: onVisibleRangeChange,
                                     preserveVisibleRect: preserveVisibleRect,
                                     revealRange: revealRange,
@@ -92,6 +96,7 @@ struct DiffTextView: NSViewRepresentable {
         var hunkActions: HunkActions?
         var onSelectionChange: ((NSRange) -> Void)?
         var onExplain: ((String, String) -> Void)?
+        var codeReferencePath = ""
         var onVisibleRangeChange: ((NSRange) -> Void)?
         var preserveVisibleRect = false
         var revealRange: NSRange?
@@ -113,6 +118,10 @@ struct DiffTextView: NSViewRepresentable {
         private var hunkActionRows: [String: NSStackView] = [:]
         private var hunkRowIdentities: [String: HunkRowIdentity] = [:]
         private var explainButton: NSButton?
+        private var copyReferenceButton: HunkActionButton?
+        private var selectionActionStack: NSStackView?
+        private var showsCopyConfirmation = false
+        private var copyConfirmTask: Task<Void, Never>?
         private weak var selectionTextView: NSTextView?
         private var isSplit = false
         private var isSyncing = false
@@ -125,7 +134,7 @@ struct DiffTextView: NSViewRepresentable {
         private var isLayingOutHost = false
         private var lastInstalledHunkIDs: [String] = []
         private var lastReportedCharRange = NSRange(location: NSNotFound, length: 0)
-        private var observesFind = false
+        private var observesDiffNotifications = false
 
         var blameHitRects: [NSRect] { blameHits.map(\.rect) }
 
@@ -165,6 +174,7 @@ struct DiffTextView: NSViewRepresentable {
                      hunkActions: HunkActions?,
                      onSelectionChange: ((NSRange) -> Void)?,
                      onExplain: ((String, String) -> Void)?,
+                     codeReferencePath: String,
                      onVisibleRangeChange: ((NSRange) -> Void)?,
                      preserveVisibleRect: Bool,
                      revealRange: NSRange?,
@@ -180,6 +190,7 @@ struct DiffTextView: NSViewRepresentable {
             self.hunkActions = hunkActions
             self.onSelectionChange = onSelectionChange
             self.onExplain = onExplain
+            self.codeReferencePath = codeReferencePath
             self.onVisibleRangeChange = onVisibleRangeChange
             self.preserveVisibleRect = preserveVisibleRect
             self.revealRange = revealRange
@@ -222,7 +233,7 @@ struct DiffTextView: NSViewRepresentable {
                 }
             }
             relayoutOverlay()
-            updateExplainButton()
+            updateSelectionButtons()
             reportVisibleRange()
             let hunkIDs = document.hunkHeaders.map(\.id)
             let sameHunks = hunkIDs == lastInstalledHunkIDs
@@ -233,17 +244,22 @@ struct DiffTextView: NSViewRepresentable {
                     self?.reportVisibleRange()
                 }
             }
-            observeFind()
+            observeDiffNotifications()
         }
 
-        private func observeFind() {
-            guard !observesFind else { return }
+        private func observeDiffNotifications() {
+            guard !observesDiffNotifications else { return }
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(showFindBar),
                 name: .siftFindInDiff,
                 object: nil)
-            observesFind = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(copyCodeReferenceFromNotification),
+                name: .siftCopyCodeReference,
+                object: nil)
+            observesDiffNotifications = true
         }
 
         @objc func showFindBar() {
@@ -257,14 +273,19 @@ struct DiffTextView: NSViewRepresentable {
         private func rebuildHierarchy(split: Bool) {
             cancelBlameDetailTask()
             NotificationCenter.default.removeObserver(self)
-            observesFind = false
+            observesDiffNotifications = false
             container?.subviews.forEach { $0.removeFromSuperview() }
             overlay = nil
             rightExplainOverlay = nil
             blameOverlay = nil
             removeAllHunkActionRows()
             lastInstalledHunkIDs = []
+            copyConfirmTask?.cancel()
+            copyConfirmTask = nil
+            showsCopyConfirmation = false
             explainButton = nil
+            copyReferenceButton = nil
+            selectionActionStack = nil
             selectionTextView = nil
             scrollView = nil
             textView = nil
@@ -348,6 +369,7 @@ struct DiffTextView: NSViewRepresentable {
             textView.layoutManager?.backgroundLayoutEnabled = false
             textView.layoutManager?.allowsNonContiguousLayout = true
             textView.hunkCursorSource = self
+            textView.codeReferenceSource = self
 
             scrollView.documentView = textView
             return (scrollView, textView)
@@ -519,7 +541,7 @@ struct DiffTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             selectionTextView = textView
             onSelectionChange?(textView.selectedRange())
-            updateExplainButton()
+            updateSelectionButtons()
         }
 
         private func syncVerticalScroll(from notification: Notification) {
@@ -544,6 +566,7 @@ struct DiffTextView: NSViewRepresentable {
         }
 
         deinit {
+            copyConfirmTask?.cancel()
             blameDetailTask?.cancel()
             NotificationCenter.default.removeObserver(self)
         }
@@ -567,9 +590,21 @@ struct DiffTextView: NSViewRepresentable {
         func mouseExited() {}
 
         func hunkActionContains(windowPoint: NSPoint) -> Bool {
-            guard let overlay else { return false }
-            let local = overlay.convert(windowPoint, from: nil)
-            return hunkActionRows.values.contains { !$0.isHidden && $0.frame.contains(local) }
+            if let overlay {
+                let local = overlay.convert(windowPoint, from: nil)
+                if hunkActionRows.values.contains(where: { !$0.isHidden && $0.frame.contains(local) }) {
+                    return true
+                }
+            }
+            return selectionActionContains(windowPoint: windowPoint)
+        }
+
+        private func selectionActionContains(windowPoint: NSPoint) -> Bool {
+            guard let stack = selectionActionStack, !stack.isHidden, let host = stack.superview else {
+                return false
+            }
+            let local = host.convert(windowPoint, from: nil)
+            return stack.frame.contains(local)
         }
 
         @objc func relayoutOverlay() {
@@ -593,11 +628,7 @@ struct DiffTextView: NSViewRepresentable {
                 blameOverlay?.frame = scrollView.bounds
             }
             rebuildBlameHits()
-            if (selectionTextView ?? textView)?.selectedRange().length ?? 0 > 0 {
-                updateExplainButton()
-            } else {
-                explainButton?.isHidden = true
-            }
+            updateSelectionButtons()
             syncHunkActionRows()
         }
 
@@ -941,34 +972,137 @@ struct DiffTextView: NSViewRepresentable {
             onExplain?(selected, surrounding)
         }
 
-        private func updateExplainButton() {
+        @objc func copyCodeReferenceFromNotification() {
+            copyCodeReference(from: selectionTextView ?? textView)
+        }
+
+        @objc func copyCodeReferenceClicked() {
+            copyCodeReference(from: selectionTextView ?? textView)
+        }
+
+        func copyCodeReference(from textView: NSTextView?) {
+            guard let textView, let storage = textView.textStorage else { return }
+            let usesNew = !isSplit || textView === rightTextView
+            let snippet = DiffDocumentBuilder.codeReferenceString(
+                from: storage,
+                range: textView.selectedRange(),
+                fallbackPath: codeReferencePath,
+                fileHeaders: document.fileHeaders,
+                usesNewLineNumbers: usesNew)
+            guard !snippet.isEmpty else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(snippet, forType: .string)
+            confirmCopySuccess()
+        }
+
+        private func confirmCopySuccess() {
+            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+            showsCopyConfirmation = true
+            copyConfirmTask?.cancel()
+            applyCopyConfirmationTitle()
+            updateSelectionButtons()
+            copyConfirmTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(1200))
+                guard !Task.isCancelled else { return }
+                self?.clearCopyConfirmation()
+            }
+        }
+
+        private func clearCopyConfirmation() {
+            showsCopyConfirmation = false
+            copyConfirmTask = nil
+            applyCopyConfirmationTitle()
+            updateSelectionButtons()
+        }
+
+        private func applyCopyConfirmationTitle() {
+            copyReferenceButton?.setDisplayedTitle(
+                showsCopyConfirmation ? L10n.copied : L10n.copyCodeReference,
+                confirmed: showsCopyConfirmation)
+        }
+
+        private func updateSelectionButtons() {
             guard let textView = selectionTextView ?? self.textView,
-                  textView.selectedRange().length > 0,
-                  let host = explainHost(for: textView),
-                  let rect = selectionRect(range: textView.selectedRange(), textView: textView, in: host)
+                  let storage = textView.textStorage,
+                  let host = explainHost(for: textView)
             else {
-                explainButton?.isHidden = true
+                hideSelectionButtons()
                 return
             }
-            let button = explainButton ?? makeExplainButton()
-            if button.superview !== host {
-                button.removeFromSuperview()
-                host.addSubview(button, positioned: .above, relativeTo: nil)
-                explainButton = button
-            }
-            button.isHidden = false
-            button.sizeToFit()
-            let size = button.fittingSize
-            let padding: CGFloat = 4
-            var x = min(rect.maxX + padding, host.bounds.width - size.width - 8)
-            x = max(8, x)
-            let y: CGFloat
-            if host.isFlipped {
-                y = min(rect.maxY + padding, max(8, host.bounds.height - size.height - 8))
+            let selected = textView.selectedRange()
+            let layoutRange: NSRange
+            if selected.length > 0 {
+                layoutRange = selected
+            } else if showsCopyConfirmation {
+                layoutRange = DiffDocumentBuilder.surroundingRange(
+                    of: selected, in: storage.string, extraLines: 0)
             } else {
-                y = max(8, rect.minY - size.height - padding)
+                hideSelectionButtons()
+                return
             }
-            button.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+            guard layoutRange.length > 0,
+                  let rect = selectionRect(range: layoutRange, textView: textView, in: host)
+            else {
+                hideSelectionButtons()
+                return
+            }
+            let stack = selectionActionStack ?? makeSelectionActionStack()
+            if stack.superview !== host {
+                stack.removeFromSuperview()
+                host.addSubview(stack, positioned: .above, relativeTo: nil)
+                selectionActionStack = stack
+            }
+            explainButton?.isHidden = onExplain == nil
+            applyCopyConfirmationTitle()
+            stack.isHidden = false
+            stack.layoutSubtreeIfNeeded()
+            let size = selectionActionSize(for: stack)
+            stack.frame = DiffOverlayGeometry.selectionActionFrame(
+                selection: rect, size: size, in: host.bounds, flipped: host.isFlipped)
+            applySelectionActionChrome(stack)
+            invalidateActionCursors()
+        }
+
+        private func hideSelectionButtons() {
+            let wasVisible = selectionActionStack?.isHidden == false
+            selectionActionStack?.isHidden = true
+            if wasVisible { invalidateActionCursors() }
+        }
+
+        private func selectionActionSize(for stack: NSStackView) -> NSSize {
+            let visible = stack.arrangedSubviews.filter { !$0.isHidden }
+            var width = stack.edgeInsets.left + stack.edgeInsets.right
+            var height: CGFloat = 0
+            for (index, view) in visible.enumerated() {
+                let size = view.fittingSize
+                width += size.width
+                if index > 0 { width += stack.spacing }
+                height = max(height, size.height)
+            }
+            height += stack.edgeInsets.top + stack.edgeInsets.bottom
+            return NSSize(width: ceil(width), height: ceil(max(height, 24)))
+        }
+
+        private func applySelectionActionChrome(_ stack: NSStackView) {
+            stack.wantsLayer = true
+            stack.layer?.cornerRadius = 6
+            stack.layer?.masksToBounds = true
+            stack.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            stack.layer?.borderWidth = 1
+            stack.layer?.borderColor = NSColor.separatorColor.cgColor
+        }
+
+        private func invalidateActionCursors() {
+            if let textView, let window = textView.window {
+                window.invalidateCursorRects(for: textView)
+            }
+            if let rightTextView, let window = rightTextView.window {
+                window.invalidateCursorRects(for: rightTextView)
+            }
+            if let host = selectionActionStack?.superview, let window = host.window {
+                window.invalidateCursorRects(for: host)
+            }
         }
 
         private func explainHost(for textView: NSTextView) -> NSView? {
@@ -978,8 +1112,32 @@ struct DiffTextView: NSViewRepresentable {
             return overlay ?? scrollView
         }
 
-        private func makeExplainButton() -> NSButton {
-            HunkActionButton(title: L10n.explainSelection, target: self, action: #selector(explainClicked), hunkID: "explain-selection")
+        private func makeSelectionActionStack() -> NSStackView {
+            let copy = HunkActionButton(
+                title: L10n.copyCodeReference,
+                target: self,
+                action: #selector(copyCodeReferenceClicked),
+                hunkID: "copy-selection")
+            copyReferenceButton = copy
+            if showsCopyConfirmation {
+                copy.setDisplayedTitle(L10n.copied, confirmed: true)
+            }
+            let explain = HunkActionButton(
+                title: L10n.explainSelection,
+                target: self,
+                action: #selector(explainClicked),
+                hunkID: "explain-selection")
+            explainButton = explain
+            let stack = NSStackView(views: [copy, explain])
+            stack.orientation = .horizontal
+            stack.alignment = .centerY
+            stack.spacing = 2
+            stack.edgeInsets = NSEdgeInsets(top: 2, left: 4, bottom: 2, right: 4)
+            stack.detachesHiddenViews = true
+            stack.setHuggingPriority(.required, for: .horizontal)
+            stack.setHuggingPriority(.required, for: .vertical)
+            applySelectionActionChrome(stack)
+            return stack
         }
 
         private func selectionRect(range: NSRange, textView: NSTextView, in host: NSView) -> NSRect? {
@@ -1158,6 +1316,7 @@ struct DiffTextView: NSViewRepresentable {
 final class HunkActionButton: NSButton {
     private var hovering = false
     private var pressed = false
+    private var confirmed = false
 
     convenience init(title: String, target: AnyObject?, action: Selector, hunkID: String) {
         self.init(title: title, target: target, action: action)
@@ -1168,13 +1327,19 @@ final class HunkActionButton: NSButton {
         focusRingType = .none
         font = NSFont.systemFont(ofSize: 11, weight: .medium)
         contentTintColor = .secondaryLabelColor
-        attributedTitle = Self.title(title, hovering: false, pressed: false)
+        attributedTitle = Self.title(title, hovering: false, pressed: false, confirmed: false)
         wantsLayer = true
         layer?.masksToBounds = true
         (cell as? NSButtonCell)?.highlightsBy = []
         (cell as? NSButtonCell)?.showsStateBy = []
         setContentHuggingPriority(.required, for: .horizontal)
         setContentHuggingPriority(.required, for: .vertical)
+    }
+
+    func setDisplayedTitle(_ string: String, confirmed: Bool = false) {
+        title = string
+        self.confirmed = confirmed
+        refreshAppearance()
     }
 
     override var intrinsicContentSize: NSSize {
@@ -1244,13 +1409,14 @@ final class HunkActionButton: NSButton {
     }
 
     private func refreshAppearance() {
-        attributedTitle = Self.title(title, hovering: hovering, pressed: pressed)
+        attributedTitle = Self.title(title, hovering: hovering, pressed: pressed, confirmed: confirmed)
+        invalidateIntrinsicContentSize()
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
     }
 
-    private static func title(_ string: String, hovering: Bool, pressed: Bool) -> NSAttributedString {
-        let color: NSColor = (hovering || pressed) ? .labelColor : .secondaryLabelColor
+    private static func title(_ string: String, hovering: Bool, pressed: Bool, confirmed: Bool) -> NSAttributedString {
+        let color: NSColor = (hovering || pressed || confirmed) ? .labelColor : .secondaryLabelColor
         return NSAttributedString(string: string, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: .medium),
             .foregroundColor: color,
@@ -1277,7 +1443,7 @@ final class DiffHostView: NSView {
     }
 }
 
-/// 分栏右栏：只承载「解释这段」，不处理 hunk hover。
+/// 分栏右栏：只承载选区按钮，不处理 hunk hover。
 private final class PassthroughOverlayView: NSView {
     override var isFlipped: Bool { false }
 
@@ -1289,6 +1455,22 @@ private final class PassthroughOverlayView: NSView {
             }
         }
         return nil
+    }
+
+    override func resetCursorRects() {
+        discardCursorRects()
+        for subview in subviews where !subview.isHidden {
+            addCursorRect(subview.frame, cursor: .pointingHand)
+        }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        if subviews.contains(where: { !$0.isHidden && $0.frame.contains(local) }) {
+            NSCursor.pointingHand.set()
+            return
+        }
+        super.cursorUpdate(with: event)
     }
 }
 
@@ -1438,9 +1620,27 @@ private struct BlamePopoverView: View {
 /// 只读 diff 文本。方向键交给文件列表切行，不移动插入点。
 final class DiffCopyTextView: NSTextView {
     weak var hunkCursorSource: DiffTextView.Coordinator?
+    weak var codeReferenceSource: DiffTextView.Coordinator?
 
     override var writablePasteboardTypes: [NSPasteboard.PasteboardType] {
         [.string]
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        let item = NSMenuItem(
+            title: L10n.copyCodeReference,
+            action: #selector(copyCodeReference(_:)),
+            keyEquivalent: "c")
+        item.keyEquivalentModifierMask = [.command, .shift]
+        item.target = self
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+        return menu
+    }
+
+    @objc func copyCodeReference(_ sender: Any?) {
+        codeReferenceSource?.copyCodeReference(from: self)
     }
 
     override func writeSelection(to pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {

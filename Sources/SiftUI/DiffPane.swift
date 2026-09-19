@@ -118,6 +118,7 @@ struct DiffPane: View {
                              store.startExplain(selectedText: selected,
                                                 surroundingText: surrounding)
                          },
+                         codeReferencePath: store.selectedFile?.path ?? "",
                          onVisibleRangeChange: store.usesContinuousDiff ? { range in
                              let fileRanges = Dictionary(uniqueKeysWithValues:
                                 document.fileHeaders.map { ($0.id, $0.range) })

@@ -26,6 +26,7 @@ The app follows the system language. Chinese is used when the preferred language
 - **Images and large files**: Preview image diffs. Generated files and oversized files stay collapsed by default.
 - **Blame**: Show line authors and commit info in single-file mode.
 - **AI explain**: Send a selection or hunk to an OpenAI-compatible `/chat/completions` endpoint and stream an explanation.
+- **Finder and code references**: The file list context menu can reveal the current file in Finder. A diff selection can be copied as a path-and-line code reference (`Cmd+Shift+C`) for pasting into other tools.
 - **In-app updates**: Check GitHub Releases, download a new version, and restart to install after confirmation.
 
 Sift is a review tool. It does not provide a commit graph, branch management, rebase, conflict resolution, push, or pull.
@@ -63,6 +64,8 @@ open /Applications/Sift.app
 3. Click a file to read its diff. Use the checkbox to stage or unstage the whole file.
 4. Use the hunk header to stage, unstage, or discard that hunk. Deleting an untracked file asks for confirmation.
 5. Use the up and down arrow keys to move among visible files. Hold `Shift` to extend the file selection.
+
+The file list context menu can reveal the current file in Finder. Double-click opens it in the default app. In the diff pane, copy a selection as a path-and-line code reference, or press `Cmd+Shift+C`.
 
 The funnel button in the middle pane configures file filters. Click Apply Filter to hide matches. When the button is selected, click it again to clear the filter.
 

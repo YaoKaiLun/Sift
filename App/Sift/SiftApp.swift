@@ -92,6 +92,10 @@ struct SiftApp: App {
                     NotificationCenter.default.post(name: .siftFindInDiff, object: nil)
                 }
                 .keyboardShortcut("f", modifiers: .command)
+                Button(L10n.copyCodeReference) {
+                    NotificationCenter.default.post(name: .siftCopyCodeReference, object: nil)
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
             }
         }
     }

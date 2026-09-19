@@ -51,6 +51,39 @@ final class DiffOverlayGeometryTests: XCTestCase {
         XCTAssertEqual(frame.midY, header.midY, accuracy: 0.5)
     }
 
+    func testSelectionActionSitsBelowAndDoesNotUseSelectionMaxX() {
+        let selection = NSRect(x: 120, y: 40, width: 80, height: 16)
+        let size = NSSize(width: 180, height: 24)
+        let bounds = NSRect(x: 0, y: 0, width: 400, height: 300)
+        let frame = DiffOverlayGeometry.selectionActionFrame(
+            selection: selection, size: size, in: bounds, flipped: true)
+
+        XCTAssertEqual(frame.minX, 120, accuracy: 0.5)
+        XCTAssertEqual(frame.minY, selection.maxY + 6, accuracy: 0.5)
+        XCTAssertFalse(frame.intersects(selection),
+                       "应落在选区下方，不能盖住同一行后半段代码")
+    }
+
+    func testSelectionActionClampsWhenSelectionIsNearTrailingEdge() {
+        let selection = NSRect(x: 330, y: 40, width: 50, height: 16)
+        let size = NSSize(width: 180, height: 24)
+        let bounds = NSRect(x: 0, y: 0, width: 400, height: 300)
+        let frame = DiffOverlayGeometry.selectionActionFrame(
+            selection: selection, size: size, in: bounds, flipped: true)
+        XCTAssertEqual(frame.maxX, 392, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(frame.minX, 8)
+    }
+
+    func testSelectionActionMovesAboveWhenBelowDoesNotFit() {
+        let selection = NSRect(x: 20, y: 270, width: 80, height: 16)
+        let size = NSSize(width: 160, height: 24)
+        let bounds = NSRect(x: 0, y: 0, width: 400, height: 300)
+        let frame = DiffOverlayGeometry.selectionActionFrame(
+            selection: selection, size: size, in: bounds, flipped: true)
+        XCTAssertEqual(frame.maxY, selection.minY - 6, accuracy: 0.5)
+        XCTAssertFalse(frame.intersects(selection))
+    }
+
     func testFullBleedBarStretchesToOverlayEdges() {
         let header = NSRect(x: 10, y: 12, width: 80, height: 24)
         let bounds = NSRect(x: 0, y: 0, width: 400, height: 300)
@@ -89,6 +122,31 @@ final class DiffOverlayGeometryTests: XCTestCase {
             pressure: 1))
         button.mouseUp(with: event)
         XCTAssertTrue(target.fired, "自定义绘制的 hunk 按钮松开时必须发出 action")
+    }
+
+    func testHunkActionButtonConfirmationUpdatesTitle() {
+        let button = HunkActionButton(
+            title: "复制代码引用",
+            target: nil,
+            action: #selector(HunkActionClickTarget.clicked(_:)),
+            hunkID: "copy-selection")
+        button.setDisplayedTitle("已复制", confirmed: true)
+        XCTAssertEqual(button.title, "已复制")
+        XCTAssertEqual(button.attributedTitle.string, "已复制")
+        let color = button.attributedTitle.attribute(
+            .foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        XCTAssertEqual(color, NSColor.labelColor)
+        button.setDisplayedTitle("复制代码引用", confirmed: false)
+        XCTAssertEqual(button.attributedTitle.string, "复制代码引用")
+    }
+
+    func testFileRowClickPolicyLetsContextMenuThrough() {
+        XCTAssertTrue(FileRowClickPolicy.captures(type: .leftMouseDown, flags: []))
+        XCTAssertTrue(FileRowClickPolicy.captures(type: .leftMouseUp, flags: []))
+        XCTAssertFalse(FileRowClickPolicy.captures(type: .rightMouseDown, flags: []))
+        XCTAssertFalse(FileRowClickPolicy.captures(type: .rightMouseUp, flags: []))
+        XCTAssertFalse(FileRowClickPolicy.captures(type: .leftMouseDown, flags: .control))
+        XCTAssertFalse(FileRowClickPolicy.captures(type: .mouseMoved, flags: []))
     }
 }
 

@@ -108,6 +108,8 @@ public enum L10n {
     public static var discardHunk: String { t("放弃区块", "Discard Hunk") }
     public static var explain: String { t("解释", "Explain") }
     public static var explainSelection: String { t("解释这段", "Explain Selection") }
+    public static var copyCodeReference: String { t("复制代码引用", "Copy Code Reference") }
+    public static var showInFinder: String { t("在 Finder 中显示", "Show in Finder") }
     public static var old: String { t("旧", "Old") }
     public static var new: String { t("新", "New") }
     public static var imageTooLarge: String { t("图片过大，无法预览", "Image is too large to preview") }
