@@ -28,6 +28,42 @@ public struct GitRepository: Sendable {
         return WorktreeParser.parse(data)
     }
 
+    public func stashes() async throws -> [StashInfo] {
+        let data = try await runner.run(
+            ["stash", "list", "--format=%H%x1f%gd%x1f%s%x1e"], in: root)
+        return StashListParser.parse(data)
+    }
+
+    public func stashFiles(selector: String) async throws -> (
+        files: [FileStatus], lineStats: [String: LineStats]
+    ) {
+        async let names = runner.run(
+            ["stash", "show", "--name-status", "-z", "--include-untracked", selector], in: root)
+        async let nums = runner.run(
+            ["stash", "show", "--numstat", "-z", "--include-untracked", selector], in: root)
+        return (try NameStatusParser.parse(try await names), NumstatParser.parse(try await nums))
+    }
+
+    public func hasUncommittedChanges() async throws -> Bool {
+        !(try await status()).isEmpty
+    }
+
+    public func applyStash(selector: String) async throws {
+        _ = try await runner.run(
+            ["stash", "apply", "--quiet", selector], in: root, optionalLocks: false)
+    }
+
+    public func dropStash(selector: String) async throws {
+        _ = try await runner.run(
+            ["stash", "drop", "--quiet", selector], in: root, optionalLocks: false)
+    }
+
+    /// 从当前仓库执行 `git worktree remove`。不加 `--force`。
+    public func removeWorktree(at path: URL) async throws {
+        _ = try await runner.run(
+            ["worktree", "remove", path.path], in: root, optionalLocks: false)
+    }
+
     /// 单个文件的 diff。`staged` 为 true 时对比暂存区与 HEAD，否则对比工作区与暂存区。
     public func diff(path: String, staged: Bool) async throws -> FileDiff {
         var arguments = ["diff", "--no-color", "-U3"]
@@ -103,6 +139,19 @@ public struct GitRepository: Sendable {
             args = ["show", "--format=", "--no-color", "-U3", sha, "--", path]
         }
         return DiffParser.parse(try await runner.run(args, in: root), path: path)
+    }
+
+    /// `stash -u` 的未跟踪文件在第三父提交上。先比 WIP，空了再比 `^3`。
+    public func stashDiff(path: String, selector: String) async throws -> FileDiff {
+        let parent = await commitParent(sha: selector)
+        let primary = try await diff(path: path, from: parent, to: selector)
+        if primary.content != .empty { return primary }
+        let third = try await runner.runAllowingFailure(["rev-parse", "\(selector)^3"], in: root)
+        guard third.exitCode == 0 else { return primary }
+        let sha = String(decoding: third.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sha.isEmpty else { return primary }
+        return try await diff(path: path, from: parent, to: sha)
     }
 
     public func commitParent(sha: String) async -> String? {

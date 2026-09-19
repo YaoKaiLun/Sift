@@ -225,13 +225,13 @@ struct DiffPane: View {
         if store.usesContinuousDiff, let id = visibleContinuousFileID {
             let path = Self.path(fromFileID: id)
             guard let file = store.fileStatuses.first(where: { $0.path == path }) else { return nil }
-            if id.hasPrefix("c:") || store.selectedCommit != nil {
+            if id.hasPrefix("c:") || store.isReadingSnapshot {
                 return file.indexStatus
             }
             return id.hasPrefix("s:") ? file.indexStatus : file.worktreeStatus
         }
         guard let file = store.selectedFile else { return nil }
-        if store.selectedCommit != nil { return file.indexStatus }
+        if store.isReadingSnapshot { return file.indexStatus }
         return store.selectedFileIsStaged ? file.indexStatus : file.worktreeStatus
     }
 
@@ -263,7 +263,7 @@ struct DiffPane: View {
     }
 
     private var hunkActions: HunkActions? {
-        if store.selectedCommit != nil { return nil }
+        if store.isReadingSnapshot { return nil }
         if store.usesContinuousDiff {
             return HunkActions(
                 showsStage: true,
@@ -475,7 +475,7 @@ struct DiffPane: View {
             blameLines = []
             return
         }
-        if store.selectedCommit != nil, store.commitParentSHA == nil {
+        if store.isReadingSnapshot, store.commitParentSHA == nil {
             blameLines = []
             return
         }
@@ -483,7 +483,7 @@ struct DiffPane: View {
         let lines = await repo.blame(
             path: file.path,
             staged: store.selectedFileIsStaged,
-            revision: store.selectedCommit == nil ? nil : store.commitParentSHA)
+            revision: store.isReadingSnapshot ? store.commitParentSHA : nil)
         guard !Task.isCancelled else { return }
         blameLines = lines
     }

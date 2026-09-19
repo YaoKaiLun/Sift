@@ -19,7 +19,9 @@ struct FileListPane: View {
         @Bindable var store = store
         VStack(spacing: 0) {
             PaneHeader(title: L10n.changes,
-                       subtitle: store.selectedCommit?.shortSHA ?? store.selectedWorktree?.displayName,
+                       subtitle: store.selectedCommit?.shortSHA
+                        ?? store.selectedStash?.message
+                        ?? store.selectedWorktree?.displayName,
                        showsDivider: true,
                        leadingInset: showsSidebar ? 0 : trafficLightInset,
                        leading: {
@@ -52,6 +54,8 @@ struct FileListPane: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if let commit = store.selectedCommit {
                         CommitMessageBlock(subject: commit.subject, body: commit.body)
+                    } else if let stash = store.selectedStash {
+                        CommitMessageBlock(subject: stash.message, body: "")
                     }
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(rows) { row in
@@ -99,7 +103,7 @@ struct FileListPane: View {
 
     private var rows: [Row] {
         var result: [Row] = []
-        if store.selectedCommit != nil {
+        if store.isReadingSnapshot {
             append(&result, title: L10n.changes,
                    statuses: store.visibleFileStatuses.sorted(by: FileStatus.pathOrder),
                    staged: false)
@@ -114,7 +118,7 @@ struct FileListPane: View {
         return result
     }
 
-    private var showsFileCheckboxes: Bool { store.selectedCommit == nil }
+    private var showsFileCheckboxes: Bool { !store.isReadingSnapshot }
 
     private func append(_ rows: inout [Row], title: String, statuses: [FileStatus], staged: Bool) {
         guard !statuses.isEmpty else { return }
@@ -227,10 +231,10 @@ struct FileListPane: View {
                          depth: Int, showsDirectory: Bool) -> some View {
         let selected = store.isFileSelected(status, staged: staged)
         let stats: LineStats? = {
-            if store.selectedCommit != nil { return store.stagedLineStats[status.path] }
+            if store.isReadingSnapshot { return store.stagedLineStats[status.path] }
             return staged ? store.stagedLineStats[status.path] : store.unstagedLineStats[status.path]
         }()
-        let kind = store.selectedCommit != nil
+        let kind = store.isReadingSnapshot
             ? status.indexStatus
             : (staged ? status.indexStatus : status.worktreeStatus)
         return HStack(spacing: Theme.rowSpacing) {
@@ -303,13 +307,13 @@ struct FileListPane: View {
         rows.compactMap { row in
             guard case .file(let status, let staged, _) = row.kind else { return nil }
             return RepoStore.fileSelectionID(
-                path: status.path, staged: staged, commitSHA: store.selectedCommit?.sha)
+                path: status.path, staged: staged, commitSHA: store.readingSnapshotSHA)
         }
     }
 
     private func handleFileClick(status: FileStatus, staged: Bool) {
         let id = RepoStore.fileSelectionID(
-            path: status.path, staged: staged, commitSHA: store.selectedCommit?.sha)
+            path: status.path, staged: staged, commitSHA: store.readingSnapshotSHA)
         let flags = NSEvent.modifierFlags
         if flags.contains(.shift) {
             Task { await store.selectFileRange(orderedIDs: orderedFileIDs, to: id, file: status, staged: staged) }
@@ -323,7 +327,7 @@ struct FileListPane: View {
     /// 右键若点在已选集合里，就处理整组；否则只处理这一行。
     private func selectedFiles(for status: FileStatus, staged: Bool) -> [FileStatus] {
         let id = RepoStore.fileSelectionID(
-            path: status.path, staged: staged, commitSHA: store.selectedCommit?.sha)
+            path: status.path, staged: staged, commitSHA: store.readingSnapshotSHA)
         let ids = store.selectedFileIDs.contains(id) ? store.selectedFileIDs : [id]
         let files: [FileStatus] = ids.compactMap { targetID in
             guard let parts = RepoStore.parseFileSelectionID(targetID) else { return nil }

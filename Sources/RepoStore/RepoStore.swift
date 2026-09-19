@@ -10,17 +10,20 @@ public struct RepositoryEntry: Identifiable, Sendable {
     public let root: URL
     public let name: String
     public var worktrees: [Worktree]
+    public var stashes: [StashInfo]
     public var isPinned: Bool
     public var id: URL { root }
 
     /// 与 `Worktree.sidebarRowID` 成对使用，避免主工作树与仓库根同路径时撞 id。
     public var sidebarRowID: String { "repo:\(root.path)" }
 
-    public init(root: URL, name: String, worktrees: [Worktree], isPinned: Bool = false) {
+    public init(root: URL, name: String, worktrees: [Worktree], isPinned: Bool = false,
+                stashes: [StashInfo] = []) {
         self.root = root
         self.name = name
         self.worktrees = worktrees
         self.isPinned = isPinned
+        self.stashes = stashes
     }
 }
 
@@ -153,9 +156,13 @@ public final class RepoStore {
     public private(set) var unpushedCommits: [CommitInfo] = []
     public private(set) var hasUpstream = false
     public private(set) var selectedCommit: CommitInfo?
+    public private(set) var selectedStash: StashInfo?
     public private(set) var commitParentSHA: String?
     /// 工作区改动文件数，供侧栏徽章使用；阅读 commit 时不改这个数。
     public private(set) var workingTreeFileCount = 0
+
+    public var isReadingSnapshot: Bool { selectedCommit != nil || selectedStash != nil }
+    public var readingSnapshotSHA: String? { selectedCommit?.sha ?? selectedStash?.sha }
 
     public var visibleFileStatuses: [FileStatus] {
         FileFilter.hiding(fileStatuses, path: \.path,
@@ -308,6 +315,8 @@ public final class RepoStore {
         if selectedWorktree == worktree {
             if selectedCommit != nil {
                 await clearSelectedCommit()
+            } else if selectedStash != nil {
+                await clearSelectedStash()
             }
             return
         }
@@ -367,7 +376,7 @@ public final class RepoStore {
     }
 
     private func currentFileSelectionID(path: String, staged: Bool) -> String {
-        Self.fileSelectionID(path: path, staged: staged, commitSHA: selectedCommit?.sha)
+        Self.fileSelectionID(path: path, staged: staged, commitSHA: readingSnapshotSHA)
     }
 
     public func select(file: FileStatus, staged: Bool, replacingSelection: Bool = true) async {
@@ -376,13 +385,13 @@ public final class RepoStore {
             selectedFileIDs = [id]
             selectionAnchorID = id
         }
-        let commitSHA = selectedCommit?.sha
+        let commitSHA = readingSnapshotSHA
         let parent = commitParentSHA
-        let side: DiffSide = commitSHA.map { .commit(sha: $0) } ?? .workingTree(staged: staged)
+        let side = currentDiffSide(staged: staged)
         if usesContinuousDiff {
             let fileChanged = selectedFile?.path != file.path
                 || selectedFileIsStaged != staged
-                || selectedCommit?.sha != commitSHA
+                || readingSnapshotSHA != commitSHA
             if fileChanged {
                 resetExplainConversation(keepingPanel: true)
             }
@@ -416,7 +425,7 @@ public final class RepoStore {
                     guard let self,
                           self.selectedFile == file,
                           self.selectedFileIsStaged == staged,
-                          self.selectedCommit?.sha == commitSHA else { return }
+                          self.readingSnapshotSHA == commitSHA else { return }
                     self.setLoadedDiff(diff)
                 }
             } catch {
@@ -430,7 +439,51 @@ public final class RepoStore {
     public func select(commit: CommitInfo) async {
         guard selectedWorktree != nil else { return }
         guard selectedCommit?.sha != commit.sha else { return }
+        selectedStash = nil
         selectedCommit = commit
+        commitParentSHA = nil
+        selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
+        setLoadedDiff(nil)
+        cancelContinuousExpands()
+        continuousPlan = []
+        continuousLoaded = [:]
+        continuousRevealID = nil
+        continuousPreservesScroll = false
+        resetExplainConversation(keepingPanel: true)
+        await refreshFileList()
+    }
+
+    public func select(stash: StashInfo) async {
+        guard let entry = repository(containingStash: stash) else { return }
+        if selectedWorktree == nil
+            || entry.worktrees.contains(where: { $0.path == selectedWorktree?.path }) == false {
+            if let main = entry.worktrees.first(where: \.isMain) ?? entry.worktrees.first {
+                await select(worktree: main)
+            }
+        }
+        guard selectedWorktree != nil else { return }
+        guard selectedStash?.sha != stash.sha else { return }
+        selectedCommit = nil
+        selectedStash = stash
+        commitParentSHA = nil
+        selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
+        setLoadedDiff(nil)
+        cancelContinuousExpands()
+        continuousPlan = []
+        continuousLoaded = [:]
+        continuousRevealID = nil
+        continuousPreservesScroll = false
+        resetExplainConversation(keepingPanel: true)
+        await refreshFileList()
+    }
+
+    public func clearSelectedStash() async {
+        guard selectedStash != nil else { return }
+        selectedStash = nil
         commitParentSHA = nil
         selectedFile = nil
         selectedFileIDs = []
@@ -542,9 +595,9 @@ public final class RepoStore {
         diffTask?.cancel()
         guard let file = selectedFile, let worktree = selectedWorktree else { return }
         let staged = selectedFileIsStaged
-        let commitSHA = selectedCommit?.sha
+        let commitSHA = readingSnapshotSHA
         let parent = commitParentSHA
-        let side: DiffSide = commitSHA.map { .commit(sha: $0) } ?? .workingTree(staged: staged)
+        let side = currentDiffSide(staged: staged)
         let repository = GitRepository(root: worktree.path)
         let engine = self.engine
 
@@ -557,7 +610,7 @@ public final class RepoStore {
                     guard let self,
                           self.selectedFile == file,
                           self.selectedFileIsStaged == staged,
-                          self.selectedCommit?.sha == commitSHA,
+                          self.readingSnapshotSHA == commitSHA,
                           self.selectedWorktree == worktree else { return }
                     self.setLoadedDiff(diff)
                 }
@@ -767,6 +820,49 @@ public final class RepoStore {
                     return
                 }
 
+                let stashSnapshot: StashInfo? = await MainActor.run {
+                    guard let self, self.selectedWorktree == worktree else { return nil }
+                    guard let selected = self.selectedStash else { return nil }
+                    if let match = self.repositories.flatMap(\.stashes).first(where: { $0.sha == selected.sha }) {
+                        self.selectedStash = match
+                        return match
+                    }
+                    self.abandonSelectedStash()
+                    return nil
+                }
+
+                if let stash = stashSnapshot {
+                    async let filesResult = repository.stashFiles(selector: stash.reflogSelector)
+                    let parent = await repository.commitParent(sha: stash.sha)
+                    let files = try await filesResult
+                    guard !Task.isCancelled else { return }
+
+                    let reload = await MainActor.run { () -> (file: FileStatus, staged: Bool)? in
+                        guard let self, self.selectedWorktree == worktree,
+                              self.selectedStash?.sha == stash.sha else { return nil }
+                        self.commitParentSHA = parent
+                        self.fileStatuses = files.files
+                        self.stagedLineStats = files.lineStats
+                        self.unstagedLineStats = [:]
+                        self.isLoadingFileList = false
+                        if self.usesContinuousDiff {
+                            if invalidateAllCachedDiffs {
+                                self.invalidateContinuousLoaded()
+                            }
+                            self.reconcileContinuousSelection(with: self.visibleFileStatuses)
+                            self.rebuildContinuousPlan(preservesScroll: self.diffDocument != nil)
+                            return nil
+                        }
+                        return self.reconcileSelection(with: self.visibleFileStatuses)
+                    }
+
+                    guard !Task.isCancelled else { return }
+                    if let reload {
+                        await self?.select(file: reload.file, staged: reload.staged)
+                    }
+                    return
+                }
+
                 // status 与 numstat 并发发起——两者互不依赖，串行等待是白白浪费预算。
                 async let statusResult = repository.status()
                 async let statsResult = repository.lineStats()
@@ -863,6 +959,92 @@ public final class RepoStore {
         guard !targets.isEmpty else { return }
         await mutate(paths: targets.map(\.path)) { repo in
             try await repo.discardWorktree(paths: targets.map(\.path))
+        }
+    }
+
+    public func applyStash(_ stash: StashInfo) async {
+        guard !isMutating, let current = currentStash(stash),
+              let entry = repository(containingStash: current) else { return }
+        let target: Worktree
+        if let selected = selectedWorktree,
+           entry.worktrees.contains(where: { $0.path == selected.path }) {
+            target = selected
+        } else if let main = entry.worktrees.first(where: \.isMain) ?? entry.worktrees.first {
+            target = main
+        } else {
+            return
+        }
+        if selectedWorktree?.path != target.path {
+            await select(worktree: target)
+        }
+        guard let worktree = selectedWorktree else { return }
+        isMutating = true
+        defer { isMutating = false }
+        let git = GitRepository(root: worktree.path)
+        do {
+            if try await git.hasUncommittedChanges() {
+                errorMessage = L10n.cannotApplyStashWithLocalChanges
+                return
+            }
+            try await git.applyStash(selector: current.reflogSelector)
+            if selectedStash?.sha == current.sha {
+                selectedStash = nil
+                commitParentSHA = nil
+            }
+            await engine.invalidate(worktreePath: worktree.path)
+            await refreshFileList()
+        } catch {
+            errorMessage = L10n.cannotCompleteOperation("\(error)")
+        }
+    }
+
+    public func dropStash(_ stash: StashInfo) async {
+        guard !isMutating, let current = currentStash(stash),
+              let entry = repository(containingStash: current) else { return }
+        let root = selectedWorktree.flatMap { worktree in
+            entry.worktrees.contains(where: { $0.path == worktree.path }) ? worktree.path : nil
+        } ?? entry.root
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            try await GitRepository(root: root).dropStash(selector: current.reflogSelector)
+            if selectedStash?.sha == current.sha {
+                selectedStash = nil
+                commitParentSHA = nil
+            }
+            await refreshFileList()
+        } catch {
+            errorMessage = L10n.cannotCompleteOperation("\(error)")
+        }
+    }
+
+    public func removeWorktree(_ worktree: Worktree) async {
+        guard !isMutating else { return }
+        if worktree.isMain {
+            errorMessage = L10n.cannotRemoveMainWorktree
+            return
+        }
+        guard let entry = repositories.first(where: { $0.worktrees.contains { $0.path == worktree.path } }),
+              let main = entry.worktrees.first(where: \.isMain) else { return }
+        do {
+            if try await GitRepository(root: worktree.path).hasUncommittedChanges() {
+                errorMessage = L10n.cannotRemoveDirtyWorktree
+                return
+            }
+        } catch {
+            errorMessage = L10n.cannotCompleteOperation("\(error)")
+            return
+        }
+        if selectedWorktree?.path == worktree.path {
+            await select(worktree: main)
+        }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            try await GitRepository(root: main.path).removeWorktree(at: worktree.path)
+            await refreshFileList()
+        } catch {
+            errorMessage = L10n.cannotCompleteOperation("\(error)")
         }
     }
 
@@ -964,9 +1146,12 @@ public final class RepoStore {
         do {
             let root = try await GitRepository.discoverRoot(at: url, runner: GitRunner())
             guard !repositories.contains(where: { $0.root == root }) else { return }
-            let worktrees = try await GitRepository(root: root).worktrees()
+            let git = GitRepository(root: root)
+            async let worktrees = git.worktrees()
+            async let stashes = git.stashes()
             let entry = RepositoryEntry(
-                root: root, name: root.lastPathComponent, worktrees: worktrees, isPinned: false)
+                root: root, name: root.lastPathComponent,
+                worktrees: try await worktrees, isPinned: false, stashes: try await stashes)
             switch placement {
             case .afterPinned:
                 let index = repositories.firstIndex(where: { !$0.isPinned }) ?? repositories.count
@@ -975,7 +1160,7 @@ public final class RepoStore {
                 repositories.append(entry)
             }
             persist()
-            if selectedWorktree == nil, let first = worktrees.first {
+            if selectedWorktree == nil, let first = entry.worktrees.first {
                 await select(worktree: first)
             }
         } catch {
@@ -1024,7 +1209,7 @@ public final class RepoStore {
     }
 
     private func mutate(paths: [String], _ body: (GitRepository) async throws -> Void) async {
-        guard selectedCommit == nil else { return }
+        guard !isReadingSnapshot else { return }
         guard !isMutating, let worktree = selectedWorktree else { return }
         isMutating = true
         defer { isMutating = false }
@@ -1122,10 +1307,10 @@ public final class RepoStore {
     }
 
     private func rebuildContinuousPlan(preservesScroll: Bool = false) {
-        if let commit = selectedCommit {
+        if let sha = readingSnapshotSHA {
             continuousPlan = ContinuousDiffPlan.buildCommit(
                 statuses: visibleFileStatuses,
-                sha: commit.sha,
+                sha: sha,
                 stats: stagedLineStats)
         } else {
             continuousPlan = ContinuousDiffPlan.build(
@@ -1205,7 +1390,10 @@ public final class RepoStore {
         let worktreePath = worktree.path
         let side: DiffSide
         let parent: String?
-        if let sha = entry.commitSHA {
+        if selectedStash != nil {
+            side = currentDiffSide(staged: entry.staged)
+            parent = commitParentSHA
+        } else if let sha = entry.commitSHA {
             side = .commit(sha: sha)
             parent = commitParentSHA
         } else {
@@ -1252,7 +1440,7 @@ public final class RepoStore {
     }
 
     private func sideStillExists(_ status: FileStatus, staged: Bool) -> Bool {
-        if selectedCommit != nil { return true }
+        if isReadingSnapshot { return true }
         if staged { return status.hasStagedChanges }
         return status.hasUnstagedChanges || status.isUntracked
     }
@@ -1266,6 +1454,7 @@ public final class RepoStore {
         unpushedCommits = []
         hasUpstream = false
         clearCommitReadingState()
+        selectedStash = nil
     }
 
     /// 当前 SHA 已不在未推送列表里：清掉 commit 选择，随后走工作区刷新。
@@ -1282,6 +1471,41 @@ public final class RepoStore {
         continuousRevealID = nil
         continuousPreservesScroll = false
         resetExplainConversation(keepingPanel: true)
+    }
+
+    private func abandonSelectedStash() {
+        selectedStash = nil
+        commitParentSHA = nil
+        selectedFile = nil
+        selectedFileIDs = []
+        selectionAnchorID = nil
+        setLoadedDiff(nil)
+        cancelContinuousExpands()
+        continuousPlan = []
+        continuousLoaded = [:]
+        continuousRevealID = nil
+        continuousPreservesScroll = false
+        resetExplainConversation(keepingPanel: true)
+    }
+
+    private func currentDiffSide(staged: Bool) -> DiffSide {
+        if let stash = selectedStash {
+            return .stash(selector: stash.reflogSelector)
+        }
+        if let sha = readingSnapshotSHA {
+            return .commit(sha: sha)
+        }
+        return .workingTree(staged: staged)
+    }
+
+    private func currentStash(_ stash: StashInfo) -> StashInfo? {
+        repositories.flatMap(\.stashes).first { $0.sha == stash.sha }
+    }
+
+    private func repository(containingStash stash: StashInfo) -> RepositoryEntry? {
+        repositories.first { entry in
+            entry.stashes.contains { $0.sha == stash.sha }
+        }
     }
 
     private func applyVisibleFileFilter() {
@@ -1453,9 +1677,13 @@ public final class RepoStore {
         updated.reserveCapacity(repositories.count)
         for entry in repositories {
             do {
-                let worktrees = try await GitRepository(root: entry.root).worktrees()
+                let git = GitRepository(root: entry.root)
+                async let worktrees = git.worktrees()
+                async let stashes = git.stashes()
                 updated.append(RepositoryEntry(
-                    root: entry.root, name: entry.name, worktrees: worktrees, isPinned: entry.isPinned))
+                    root: entry.root, name: entry.name,
+                    worktrees: try await worktrees, isPinned: entry.isPinned,
+                    stashes: try await stashes))
             } catch {
                 updated.append(entry)
             }

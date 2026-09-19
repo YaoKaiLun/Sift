@@ -27,6 +27,7 @@ The app follows the system language. Chinese is used when the preferred language
 - **Blame**: Show line authors and commit info in single-file mode.
 - **AI explain**: Send a selection or hunk to an OpenAI-compatible `/chat/completions` endpoint and stream an explanation.
 - **Finder and code references**: The file list context menu can reveal the current file in Finder. A diff selection can be copied as a path-and-line code reference (`Cmd+Shift+C`) for pasting into other tools.
+- **Stashes and worktrees**: Each repository can show a `stashes` group. Selecting a stash opens a read-only diff; the context menu can apply or drop it. Linked worktrees can be removed from the context menu; a dirty worktree is refused instead of force-deleted.
 - **In-app updates**: Check GitHub Releases, download a new version, and restart to install after confirmation.
 
 Sift is a review tool. It does not provide a commit graph, branch management, rebase, conflict resolution, push, or pull.
@@ -66,6 +67,8 @@ open /Applications/Sift.app
 5. Use the up and down arrow keys to move among visible files. Hold `Shift` to extend the file selection.
 
 The file list context menu can reveal the current file in Finder. Double-click opens it in the default app. In the diff pane, copy a selection as a path-and-line code reference, or press `Cmd+Shift+C`.
+
+A `stashes` group appears after the worktrees when the repository has stashes. Select one to inspect a read-only diff; the context menu can apply or drop it. Linked worktrees can be deleted from the context menu; the main worktree cannot.
 
 The funnel button in the middle pane configures file filters. Click Apply Filter to hide matches. When the button is selected, click it again to clear the filter.
 

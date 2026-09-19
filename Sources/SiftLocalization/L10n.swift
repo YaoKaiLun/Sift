@@ -41,6 +41,26 @@ public enum L10n {
     public static var pinRepository: String { t("置顶仓库", "Pin Repository") }
     public static var unpinRepository: String { t("取消置顶", "Unpin Repository") }
     public static var branch: String { t("分支", "Branch") }
+    public static var stashes: String { t("stashes", "stashes") }
+    public static var applyStash: String { t("应用", "Apply") }
+    public static var deleteStash: String { t("删除", "Delete") }
+    public static var deleteWorktree: String { t("删除工作树", "Delete Worktree") }
+    public static var deleteWorktreeTitle: String { t("删除工作树？", "Delete Worktree?") }
+    public static var deleteWorktreeMessage: String {
+        t("工作树目录会从磁盘移除，对应分支仍会保留。",
+          "The worktree directory will be removed from disk. The branch will be kept.")
+    }
+    public static var cannotApplyStashWithLocalChanges: String {
+        t("当前工作区有未提交改动，无法应用 stash。",
+          "The working tree has local changes, so the stash can't be applied.")
+    }
+    public static var cannotRemoveDirtyWorktree: String {
+        t("该工作树有未提交改动，无法删除。",
+          "This worktree has local changes, so it can't be deleted.")
+    }
+    public static var cannotRemoveMainWorktree: String {
+        t("不能删除主工作树。", "The main worktree can't be deleted.")
+    }
     public static var appearance: String { t("外观", "Appearance") }
     public static var followSystem: String { t("跟随系统", "System") }
     public static var lightAppearance: String { t("浅色", "Light") }

@@ -70,6 +70,8 @@ public actor DiffEngine {
                 diff = try await repository.diff(path: status.path, staged: staged)
             case .commit(let sha):
                 diff = try await repository.diff(path: status.path, from: parent, to: sha)
+            case .stash(let selector):
+                diff = try await repository.stashDiff(path: status.path, selector: selector)
             }
         }
 
@@ -134,6 +136,14 @@ public actor DiffEngine {
             let new: (BlobSource, String)? = status.indexStatus == .deleted
                 ? nil : (.revision(sha), path)
             return (old, new)
+        }
+        if case .stash(let selector) = side {
+            let old: (BlobSource, String)? = parent.map { (.revision($0), original) }
+            if status.indexStatus == .deleted {
+                return (old, nil)
+            }
+            let spec = status.indexStatus == .added ? "\(selector)^3" : selector
+            return (old, (.revision(spec), path))
         }
         let staged: Bool
         if case .workingTree(let value) = side { staged = value } else { staged = false }

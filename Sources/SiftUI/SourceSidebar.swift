@@ -15,6 +15,8 @@ struct SourceSidebar: View {
     @State private var collapsedRoots: Set<URL> = []
     @State private var hoveredRow: String?
     @State private var expandedCommitWorktrees: Set<URL> = []
+    @State private var expandedStashRoots: Set<URL> = []
+    @State private var worktreePendingDelete: Worktree?
     @State private var dropSlot: DropSlot?
     @State private var groupHeights: [String: CGFloat] = [:]
 
@@ -84,6 +86,22 @@ struct SourceSidebar: View {
         .onReceive(NotificationCenter.default.publisher(for: .siftAddRepository)) { _ in
             presentOpenPanel()
         }
+        .confirmationDialog(
+            L10n.deleteWorktreeTitle,
+            isPresented: Binding(
+                get: { worktreePendingDelete != nil },
+                set: { if !$0 { worktreePendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(L10n.deleteWorktree, role: .destructive) {
+                if let worktree = worktreePendingDelete {
+                    Task { await store.removeWorktree(worktree) }
+                }
+                worktreePendingDelete = nil
+            }
+        } message: {
+            Text(L10n.deleteWorktreeMessage)
+        }
     }
 
     private func repositoryGroup(_ repository: RepositoryEntry, isFirst: Bool) -> some View {
@@ -102,6 +120,9 @@ struct SourceSidebar: View {
                                 .id("commit:\(commit.sha)")
                         }
                     }
+                }
+                if !repository.stashes.isEmpty {
+                    stashGroup(repository)
                 }
             }
         }
@@ -200,7 +221,7 @@ struct SourceSidebar: View {
     private func worktreeRow(_ worktree: Worktree) -> some View {
         let id = worktree.sidebarRowID
         let isCurrent = store.selectedWorktree?.path == worktree.path
-        let selected = isCurrent && store.selectedCommit == nil
+        let selected = isCurrent && store.selectedCommit == nil && store.selectedStash == nil
         let showsUnpushed = isCurrent && !store.unpushedCommits.isEmpty
         let expanded = expandedCommitWorktrees.contains(worktree.path)
         return HStack(spacing: Theme.rowSpacing) {
@@ -258,6 +279,14 @@ struct SourceSidebar: View {
         .onTapGesture {
             Task { await store.select(worktree: worktree) }
         }
+        .contextMenu {
+            if !worktree.isMain {
+                Button(L10n.deleteWorktree, role: .destructive) {
+                    worktreePendingDelete = worktree
+                }
+                .disabled(store.isMutating)
+            }
+        }
     }
 
     private func commitRow(_ commit: CommitInfo) -> some View {
@@ -281,6 +310,96 @@ struct SourceSidebar: View {
         .onHover { hoveredRow = $0 ? id : nil }
         .onTapGesture {
             Task { await store.select(commit: commit) }
+        }
+    }
+
+    private func stashGroup(_ repository: RepositoryEntry) -> some View {
+        let expanded = expandedStashRoots.contains(repository.root)
+        return VStack(alignment: .leading, spacing: 0) {
+            stashHeaderRow(repository, expanded: expanded)
+            if expanded {
+                ForEach(repository.stashes) { stash in
+                    stashRow(stash)
+                        .id(stash.sidebarRowID)
+                }
+            }
+        }
+    }
+
+    private func stashHeaderRow(_ repository: RepositoryEntry, expanded: Bool) -> some View {
+        let id = "stashes:\(repository.root.path)"
+        return HStack(spacing: Theme.rowSpacing) {
+            Button {
+                if expanded {
+                    expandedStashRoots.remove(repository.root)
+                } else {
+                    expandedStashRoots.insert(repository.root)
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .frame(width: Theme.disclosureColumnWidth, height: Theme.sidebarRowHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            Image(systemName: "tray")
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(.secondary)
+                .frame(width: Theme.statusColumnWidth, alignment: .center)
+            Text(L10n.stashes)
+                .font(Theme.interfaceFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Text("\(repository.stashes.count)")
+                .font(Theme.secondaryFont.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.leading, Theme.sidebarChildIndent)
+        .rowSurface(isSelected: false, isHovered: hoveredRow == id,
+                    height: Theme.sidebarRowHeight)
+        .pointerCursor()
+        .onHover { hoveredRow = $0 ? id : nil }
+        .onTapGesture {
+            if expanded {
+                expandedStashRoots.remove(repository.root)
+            } else {
+                expandedStashRoots.insert(repository.root)
+            }
+        }
+    }
+
+    private func stashRow(_ stash: StashInfo) -> some View {
+        let id = stash.sidebarRowID
+        let selected = store.selectedStash?.sha == stash.sha
+        return HStack(spacing: Theme.rowSpacing) {
+            Text(stash.message)
+                .font(Theme.interfaceFont)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, Theme.sidebarChildIndent + Theme.statusColumnWidth
+                 + Theme.rowSpacing + Theme.indentWidth)
+        .rowSurface(isSelected: selected, isHovered: hoveredRow == id,
+                    height: Theme.sidebarRowHeight)
+        .pointerCursor()
+        .onHover { hoveredRow = $0 ? id : nil }
+        .onTapGesture {
+            Task { await store.select(stash: stash) }
+        }
+        .contextMenu {
+            Button(L10n.applyStash) {
+                Task { await store.applyStash(stash) }
+            }
+            .disabled(store.isMutating)
+            Button(L10n.deleteStash, role: .destructive) {
+                Task { await store.dropStash(stash) }
+            }
+            .disabled(store.isMutating)
         }
     }
 

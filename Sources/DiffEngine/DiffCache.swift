@@ -4,6 +4,7 @@ import GitKit
 public enum DiffSide: Hashable, Sendable, Equatable {
     case workingTree(staged: Bool)
     case commit(sha: String)
+    case stash(selector: String)
 }
 
 public struct DiffCacheKey: Sendable, Hashable {

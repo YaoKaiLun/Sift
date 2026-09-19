@@ -25,6 +25,7 @@ Sift 是面向 macOS 的开源 Git diff 阅读器。它把多个仓库及其 wor
 - **Blame**：在单文件模式中查看行作者和提交信息。
 - **AI 解释**：将选区或 hunk 发送到兼容 OpenAI `/chat/completions` 的服务，流式返回代码说明。
 - **Finder 与代码引用**：中栏文件右键可在 Finder 中显示。diff 选区可复制带路径和行号的代码引用（`Cmd+Shift+C`），便于粘贴到其他工具。
+- **Stash 与 worktree**：仓库分组末尾可展开 stash 列表，点选查看只读 diff，右键应用或删除。链接 worktree 可右键删除；工作区不干净时拒绝，避免强制覆盖。
 - **应用内更新**：检查 GitHub Release，下载新版本并在确认后重启安装。
 
 Sift 专注于改动审查，不提供提交图、分支管理、rebase、冲突解决、push 或 pull。
@@ -64,6 +65,8 @@ open /Applications/Sift.app
 5. 使用上下方向键切换可见文件；按住 `Shift` 可扩展文件选择范围。
 
 中栏文件右键可在 Finder 中显示；双击用系统默认应用打开。右栏选中若干行后，可复制带路径和行号的代码引用，或使用 `Cmd+Shift+C`。
+
+侧栏在 worktree 列表后展示 `stashes`（没有 stash 则隐藏）。点选可查看只读 diff；右键可应用或删除。链接 worktree 右键可删除工作树，主工作树不可删。
 
 中栏漏斗按钮用于配置文件过滤。点「应用过滤」后开始隐藏匹配项；按钮处于选中状态时，再点一次可取消过滤。
 
